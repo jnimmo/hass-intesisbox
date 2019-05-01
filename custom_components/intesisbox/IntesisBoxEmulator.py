@@ -79,10 +79,12 @@ class IntesisBoxEmulator(asyncio.Protocol):
                     response = 'LIMITS:FANSP,[AUTO,1,2,3,4]'
                 elif limit == 'VANEUD':
                     response = 'LIMITS:VANEUD,[AUTO,1,2,3,SWING]'
+                elif limit == 'VANELR':
+                    response = 'LIMITS:VANELR,[AUTO,1,2,3,SWING]'
                 elif limit == 'SETPTEMP':
                     response = 'LIMITS:SETPTEMP,[160,300]'
                 elif limit == 'MODE':
-                    response = 'LIMITS:MODE,[AUTO,HEAT,DRY,FAN,COOL]'
+                    response = 'LIMITS:MODE,[AUTO,HEAT,DRY,COOL,FAN]'
 
             response += '\r\n'
             self.transport.write(response.encode('ascii'))

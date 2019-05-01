@@ -38,26 +38,15 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 # values are in realtime.
 SCAN_INTERVAL = timedelta(seconds=300)
 
-IH_FAN_AUTO = 'Auto'
-IH_FAN_QUIET = 'Quiet'
-IH_FAN_LOW = 'Low'
-IH_FAN_MEDIUM = 'Medium'
-IH_FAN_HIGH = 'High'
-
-IH_SWING_WIDGET = 42
-IH_SWING_STOP = 'Auto/Stop'
-IH_SWING_BOTH = 'Both'
-IH_SWING_HORIZONTAL = 'Horizontal'
-IH_SWING_VERTICAL = 'Vertical'
-
-MAP_OPERATION_MODE = {
-    'auto': STATE_AUTO,
-    'fan': STATE_FAN_ONLY,
-    'heat': STATE_HEAT,
-    'dry': STATE_DRY,
-    'cool': STATE_COOL,
-    'off': STATE_OFF
+MAP_OPERATION_MODE_TO_HA = {
+    'AUTO': STATE_AUTO,
+    'FAN': STATE_FAN_ONLY,
+    'HEAT': STATE_HEAT,
+    'DRY': STATE_DRY,
+    'COOL': STATE_COOL,
+    'OFF': STATE_OFF
 }
+MAP_OPERATION_MODE_TO_IB = dict(map(reversed, MAP_OPERATION_MODE_TO_HA.items()))
 
 MAP_STATE_ICONS = {
     STATE_HEAT: 'mdi:white-balance-sunny',
@@ -67,6 +56,12 @@ MAP_STATE_ICONS = {
     STATE_FAN_ONLY: 'mdi:fan',
 }
 
+SWING_ON = 'SWING'
+SWING_STOP = 'AUTO'
+SWING_LIST_HORIZONTAL = 'Horizontal'
+SWING_LIST_VERTICAL = 'Vertical'
+SWING_LIST_BOTH = 'Both'
+SWING_LIST_STOP = 'Auto'
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     """Create the IntesisHome climate devices."""
@@ -74,11 +69,10 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     controller = intesisbox.IntesisBox(config[CONF_HOST], loop=hass.loop)
     controller.connect()
     while not controller.is_connected:
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.1)
 
     controller.poll_status()
-    async_add_entities([IntesisBoxAC(controller)])
-
+    async_add_entities([IntesisBoxAC(controller)],True)
 
 
 class IntesisBoxAC(ClimateDevice):
@@ -89,7 +83,7 @@ class IntesisBoxAC(ClimateDevice):
         _LOGGER.debug('Added climate device with state')
         self._controller = controller
 
-        self._deviceid = controller.get_device_mac()
+        self._deviceid = controller.device_mac_address
         self._devicename = DEFAULT_NAME
         self._connected = False
 
@@ -97,30 +91,38 @@ class IntesisBoxAC(ClimateDevice):
         self._min_temp = controller.min_setpoint
         self._target_temp = None
         self._current_temp = None
-        self._run_hours = None
         self._rssi = None
-        self._swing = None
-        self._swing_list = None
-        self._vvane = None
-        self._hvane = None
+        self._swing_list = [SWING_LIST_STOP]
+        self._vswing = False
+        self._hswing = False
         self._power = False
-        self._fan_speed = STATE_UNKNOWN
         self._current_operation = STATE_UNKNOWN
         self._connection_retries = 0
+        self._has_swing_control = self._controller.has_swing_control
 
-        self._operation_list = [STATE_AUTO, STATE_COOL, STATE_HEAT, STATE_DRY,
-                                STATE_FAN_ONLY, STATE_OFF]
-        self._fan_list = [IH_FAN_AUTO, IH_FAN_QUIET, IH_FAN_LOW,
-                          IH_FAN_MEDIUM, IH_FAN_HIGH]
+        # Setup fan list
+        self._fan_list = [x.title() for x in self._controller.fan_speed_list]
+        self._fan_speed = None
 
-        self._support = (SUPPORT_TARGET_TEMPERATURE | SUPPORT_OPERATION_MODE |
-                         SUPPORT_FAN_MODE)
-
-        self._has_swing_control = False
+        # Setup operation list
+        self._operation_list = [STATE_OFF]
+        for operation in self._controller.operation_list:
+            self._operation_list.append(MAP_OPERATION_MODE_TO_HA[operation])
+        
+        # Setup feature support
+        self._base_features = (SUPPORT_OPERATION_MODE | SUPPORT_TARGET_TEMPERATURE)
+        if len(self._fan_list) > 0:
+            self._base_features |= SUPPORT_FAN_MODE
+        
+        # Setup swing control
         if self._has_swing_control:
-            self._support |= SUPPORT_SWING_MODE
-            self._swing_list = [IH_SWING_STOP, IH_SWING_BOTH,
-                                IH_SWING_VERTICAL, IH_SWING_HORIZONTAL]
+            self._base_features |= SUPPORT_SWING_MODE
+            if SWING_ON in self._controller.vane_horizontal_list:
+                self._swing_list.append(SWING_LIST_HORIZONTAL)
+            if SWING_ON in self._controller.vane_vertical_list:
+                self._swing_list.append(SWING_LIST_VERTICAL)
+            if len(self._swing_list) > 2:
+                self._swing_list.append(SWING_LIST_BOTH)            
 
         self._controller.add_update_callback(self.update_callback)
 
@@ -139,8 +141,8 @@ class IntesisBoxAC(ClimateDevice):
         """Return the device specific state attributes."""
         attrs = {}
         if self._has_swing_control:
-            attrs['vertical_vane'] = self._vvane
-            attrs['horizontal_vane'] = self._hvane
+            attrs['vertical_swing'] = self._vswing
+            attrs['horizontal_swing'] = self._hswing
 
         if self._controller.is_connected:
             attrs['ha_update_type'] = 'push'
@@ -168,19 +170,8 @@ class IntesisBoxAC(ClimateDevice):
         if operation_mode == STATE_OFF:
             self._controller.set_power_off()
             self._power = False
-            self._target_temp = None
         else:
-            # Set the mode
-            if operation_mode == STATE_HEAT:
-                self._controller.set_mode_heat()
-            elif operation_mode == STATE_COOL:
-                self._controller.set_mode_cool()
-            elif operation_mode == STATE_AUTO:
-                self._controller.set_mode_auto()
-            elif operation_mode == STATE_FAN_ONLY:
-                self._controller.set_mode_fan()
-            elif operation_mode == STATE_DRY:
-                self._controller.set_mode_dry()
+            self._controller.set_mode(MAP_OPERATION_MODE_TO_IB[operation_mode])
 
             # Send the temperature again in case changing modes has changed it
             if self._target_temp:
@@ -199,22 +190,22 @@ class IntesisBoxAC(ClimateDevice):
 
     def set_fan_mode(self, fan_mode):
         """Set fan mode (from quiet, low, medium, high, auto)."""
-        self._controller.set_fan_speed(fan_mode.lower())
+        self._controller.set_fan_speed(fan_mode.upper())
 
     def set_swing_mode(self, swing_mode):
         """Set the vertical vane."""
-        if swing_mode == IH_SWING_STOP:
-            self._controller.set_vertical_vane('auto/stop')
-            self._controller.set_horizontal_vane('auto/stop')
-        elif swing_mode == IH_SWING_BOTH:
-            self._controller.set_vertical_vane('swing')
-            self._controller.set_horizontal_vane('swing')
-        elif swing_mode == IH_SWING_HORIZONTAL:
-            self._controller.set_vertical_vane('manual3')
-            self._controller.set_horizontal_vane('swing')
-        elif swing_mode == IH_SWING_VERTICAL:
-            self._controller.set_vertical_vane('swing')
-            self._controller.set_horizontal_vane('manual3')
+        if swing_mode == SWING_LIST_BOTH:
+            self._controller.set_vertical_vane(SWING_ON)
+            self._controller.set_horizontal_vane(SWING_ON)
+        elif swing_mode == SWING_LIST_STOP:
+            self._controller.set_vertical_vane(SWING_STOP)
+            self._controller.set_horizontal_vane(SWING_STOP)
+        elif swing_mode == SWING_LIST_HORIZONTAL:
+            self._controller.set_vertical_vane(SWING_STOP)
+            self._controller.set_horizontal_vane(SWING_ON)
+        elif swing_mode == SWING_LIST_VERTICAL:
+            self._controller.set_vertical_vane(SWING_ON)
+            self._controller.set_horizontal_vane(SWING_STOP)
 
     async def async_update(self):
         """Copy values from controller dictionary to climate device."""
@@ -229,31 +220,17 @@ class IntesisBoxAC(ClimateDevice):
         self._min_temp = self._controller.min_setpoint
         self._max_temp = self._controller.max_setpoint
         self._target_temp = self._controller.setpoint
-        mode = self._controller.mode
+        self._fan_speed = self._controller.fan_speed.title()
 
         # Operation mode
-        self._current_operation = MAP_OPERATION_MODE.get(mode, STATE_UNKNOWN)
-
-        # Fan speed
-        fan_speed = self._controller.get_fan_speed()
-        if fan_speed:
-            # Capitalize fan speed from pyintesishome
-            self._fan_speed = fan_speed.capitalize()
+        ib_mode = self._controller.mode
+        self._current_operation = MAP_OPERATION_MODE_TO_HA.get(ib_mode, STATE_UNKNOWN)
 
         # Swing mode
         # Climate module only supports one swing setting.
         if self._has_swing_control:
-            self._vvane = self._controller.get_vertical_swing()
-            self._hvane = self._controller.get_horizontal_swing()
-
-            if self._vvane == 'swing' and self._hvane == 'swing':
-                self._swing = IH_SWING_BOTH
-            elif self._vvane == 'swing':
-                self._swing = IH_SWING_VERTICAL
-            elif self._hvane == 'swing':
-                self._swing = IH_SWING_HORIZONTAL
-            else:
-                self._swing = IH_SWING_STOP
+            self._vswing = self._controller.vertical_swing() == SWING_ON
+            self._hswing = self._controller.horizontal_swing() == SWING_ON
 
         # Track connection lost/restored.
         if self._connected != self._controller.is_connected:
@@ -316,7 +293,14 @@ class IntesisBoxAC(ClimateDevice):
     @property
     def current_swing_mode(self):
         """Return current swing mode."""
-        return self._swing
+        if self._vswing and self._hswing:
+            return SWING_LIST_BOTH
+        elif self._vswing:
+            return SWING_LIST_VERTICAL
+        elif self._hswing:
+            return SWING_LIST_HORIZONTAL
+        else:
+            return SWING_LIST_STOP
 
     @property
     def fan_list(self):
@@ -353,12 +337,11 @@ class IntesisBoxAC(ClimateDevice):
     @property
     def target_temperature(self):
         """Return the current setpoint temperature if unit is on."""
-        if self._current_operation not in [STATE_OFF, STATE_FAN_ONLY]:
-            return self._target_temp
-        else:
-            return None
+        return self._target_temp
 
     @property
     def supported_features(self):
         """Return the list of supported features."""
-        return self._support
+        return self._base_features
+
+
