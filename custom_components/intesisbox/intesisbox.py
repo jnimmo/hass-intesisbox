@@ -7,12 +7,11 @@ import sys
 from optparse import OptionParser
 from asyncio import ensure_future
 
-_LOGGER = logging.getLogger('pyintesishome')
+_LOGGER = logging.getLogger('pyintesisbox')
 
 API_DISCONNECTED = "Disconnected"
 API_CONNECTING = "Connecting"
 API_AUTHENTICATED = "Connected"
-API_AUTH_FAILED = "Wrong username/password"
 
 POWER_ON = 'ON'
 POWER_OFF = 'OFF'
@@ -37,8 +36,7 @@ FUNCTION_ERRCODE = 'ERRCODE'
 
 
 class IntesisBox(asyncio.Protocol):
-    def __init__(self, ip, port=3310, password=None, loop=None):
-        self._password = password
+    def __init__(self, ip, port=3310, loop=None):
         self._ip = ip
         self._port = port
         self._mac = None
@@ -53,35 +51,20 @@ class IntesisBox(asyncio.Protocol):
         self._model: str = None
         self._firmversion: str = None
         self._rssi: int = None
+        self._eventLoop = loop
 
         # Limits
         self._operation_list = []
         self._fan_speed_list = []
         self._vertical_vane_list = []
         self._horizontal_vane_list = []
-
         self._setpoint_minimum = None
         self._setpoint_maximum = None
-
-        if loop:
-            _LOGGER.debug("Latching onto an existing event loop.")
-            self._eventLoop = loop
-            self._ownLoop = False
-        else:
-            _LOGGER.debug("Creating our own event loop.")
-            self._eventLoop = asyncio.new_event_loop()
-            self._ownLoop = True
 
     def connection_made(self, transport):
         """asyncio callback for a successful connection."""
         _LOGGER.debug("Connected to IntesisBox")
         self._transport = transport
-
-        # Authenticate
-        if self._password:
-            authentication = "LOGIN:{}\r".format(self._password)
-            self._transport.write(authentication.encode('ascii'))
-            _LOGGER.debug("Data sent: {!r}".format(authentication))
 
         self._transport.write("ID\r".encode('ascii'))
         self._transport.write("LIMITS:SETPTEMP\r".encode('ascii'))
@@ -92,7 +75,9 @@ class IntesisBox(asyncio.Protocol):
 
     def data_received(self, data):
         """asyncio callback when data is received on the socket"""
-        linesReceived = data.decode('ascii').splitlines()
+        decoded_data = data.decode('ascii')
+        _LOGGER.debug("Data received: {}".format(decoded_data))
+        linesReceived = decoded_data.splitlines()
         for line in linesReceived:
             cmdList = line.split(':', 1)
             cmd = cmdList[0]
@@ -147,9 +132,6 @@ class IntesisBox(asyncio.Protocol):
         self._connectionStatus = API_DISCONNECTED
         _LOGGER.info('The server closed the connection')
         self._send_update_callback()
-        if self._ownLoop:
-            _LOGGER.info('Stop the event loop')
-            self._eventLoop.stop()
 
     def connect(self):
         """Public method for connecting to IntesisHome API"""
@@ -176,12 +158,6 @@ class IntesisBox(asyncio.Protocol):
         """Public method for shutting down connectivity with the envisalink."""
         self._connectionStatus = API_DISCONNECTED
         self._transport.close()
-
-        if self._ownLoop:
-            _LOGGER.info("Shutting down IntesisHome client connection...")
-            self._eventLoop.call_soon_threadsafe(self._eventLoop.stop)
-        else:
-            _LOGGER.info("An event loop was given to us- we will shutdown when that event loop shuts down.")
 
     def poll_status(self, sendcallback=False):
         self._transport.write("GET,1:*\r".encode('ascii'))

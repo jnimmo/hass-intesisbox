@@ -92,7 +92,7 @@ class IntesisBoxAC(ClimateDevice):
         self._target_temp = None
         self._current_temp = None
         self._rssi = None
-        self._swing_list = [SWING_LIST_STOP]
+        self._swing_list = []
         self._vswing = False
         self._hswing = False
         self._power = False
@@ -117,6 +117,7 @@ class IntesisBoxAC(ClimateDevice):
         # Setup swing control
         if self._has_swing_control:
             self._base_features |= SUPPORT_SWING_MODE
+            self._swing_list = [SWING_LIST_STOP]
             if SWING_ON in self._controller.vane_horizontal_list:
                 self._swing_list.append(SWING_LIST_HORIZONTAL)
             if SWING_ON in self._controller.vane_vertical_list:
@@ -220,7 +221,9 @@ class IntesisBoxAC(ClimateDevice):
         self._min_temp = self._controller.min_setpoint
         self._max_temp = self._controller.max_setpoint
         self._target_temp = self._controller.setpoint
-        self._fan_speed = self._controller.fan_speed.title()
+
+        if self._controller.fan_speed:
+            self._fan_speed = self._controller.fan_speed.title()
 
         # Operation mode
         ib_mode = self._controller.mode
