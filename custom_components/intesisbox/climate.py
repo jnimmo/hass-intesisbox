@@ -85,7 +85,7 @@ class IntesisBoxAC(ClimateDevice):
 
         self._deviceid = controller.device_mac_address
         self._devicename = DEFAULT_NAME
-        self._connected = False
+        self._connected = controller.is_connected
 
         self._max_temp = controller.max_setpoint
         self._min_temp = controller.min_setpoint
@@ -239,10 +239,10 @@ class IntesisBoxAC(ClimateDevice):
         if self._connected != self._controller.is_connected:
             self._connected = self._controller.is_connected
             if self._connected:
-                _LOGGER.debug("Lost connection to IntesisHome.")
-            else:
                 _LOGGER.debug("Connection to IntesisHome was restored.")
-
+            else:
+                _LOGGER.debug("Lost connection to IntesisHome.")
+    
     async def async_will_remove_from_hass(self):
         """Shutdown the controller when the device is being removed."""
         self._controller.stop()
