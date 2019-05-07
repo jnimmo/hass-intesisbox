@@ -34,6 +34,8 @@ FUNCTION_AMBTEMP = 'AMBTEMP'
 FUNCTION_ERRSTATUS = 'ERRSTATUS'
 FUNCTION_ERRCODE = 'ERRCODE'
 
+NULL_VALUE = '32768'
+
 
 class IntesisBox(asyncio.Protocol):
     def __init__(self, ip, port=3310, loop=None):
@@ -91,7 +93,7 @@ class IntesisBox(asyncio.Protocol):
                     self._parse_change_received(args)
                 elif cmd == 'LIMITS':
                     self._parse_limits_received(args)
-        self._send_update_callback
+        self._send_update_callback()
 
     def _parse_id_received(self, args):
         # ID:Model,MAC,IP,Protocol,Version,RSSI
@@ -105,6 +107,8 @@ class IntesisBox(asyncio.Protocol):
     def _parse_change_received(self, args):
         function = args.split(',')[0]
         value = args.split(',')[1]
+        if value == NULL_VALUE:
+            value = None
         self._device[function] = value
 
     def _parse_limits_received(self, args):
@@ -181,25 +185,19 @@ class IntesisBox(asyncio.Protocol):
 
     def _set_value(self, uid, value):
         """Internal method to send a command to the API"""
-        message = "SET,{}:{},{}".format(1, uid, value)
-        if self._connectionStatus == API_AUTHENTICATED:
-            try:
-                self._transport.write(message.encode('ascii'))
-                _LOGGER.debug("Data sent: {!r}".format(message))
-            except Exception as e:
-                _LOGGER.error('%s Exception. %s / %s', type(e), e.args, e)
-        else:
-            _LOGGER.debug("Added message to queue {!r}".format(message))
-            self._commandQueue.put(message)
-            if self._connectionStatus == API_DISCONNECTED:
-                self.connect()
+        message = "SET,{}:{},{}\r".format(1, uid, value)
+        try:
+            self._transport.write(message.encode('ascii'))
+            _LOGGER.debug("Data sent: {!r}".format(message))
+        except Exception as e:
+            _LOGGER.error('%s Exception. %s / %s', type(e), e.args, e)
 
     def set_mode(self, mode):
-        if mode in MODES:
-            self._set_value(FUNCTION_MODE, mode)
-
         if not self.is_on:
             self.set_power_on()
+
+        if mode in MODES:
+            self._set_value(FUNCTION_MODE, mode)
         
     def set_mode_dry(self):
         """Public method to set device to dry asynchronously."""
