@@ -21,8 +21,8 @@ from homeassistant.components.climate.const import (ATTR_OPERATION_MODE,
                                                     SUPPORT_OPERATION_MODE,
                                                     SUPPORT_SWING_MODE,
                                                     SUPPORT_TARGET_TEMPERATURE)
-from homeassistant.const import (ATTR_TEMPERATURE, CONF_HOST, STATE_OFF,
-                                 STATE_UNKNOWN, TEMP_CELSIUS)
+from homeassistant.const import (ATTR_TEMPERATURE, CONF_HOST, CONF_NAME,
+                                 STATE_OFF, STATE_UNKNOWN, TEMP_CELSIUS)
 from homeassistant.exceptions import PlatformNotReady
 
 _LOGGER = logging.getLogger(__name__)
@@ -31,6 +31,7 @@ DEFAULT_NAME = 'Intesisbox'
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Required(CONF_HOST): cv.string,
+    vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
 })
 
 # Return cached results if last scan time was less than this value.
@@ -72,19 +73,20 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
         await asyncio.sleep(0.1)
 
     controller.poll_status()
-    async_add_entities([IntesisBoxAC(controller)],True)
+    name = config.get(CONF_NAME)
+    async_add_entities([IntesisBoxAC(controller, name)],True)
 
 
 class IntesisBoxAC(ClimateDevice):
     """Represents an Intesishome air conditioning device."""
 
-    def __init__(self, controller):
+    def __init__(self, controller, name):
         """Initialize the thermostat."""
         _LOGGER.debug('Added climate device with state')
         self._controller = controller
 
         self._deviceid = controller.device_mac_address
-        self._devicename = DEFAULT_NAME
+        self._devicename = name
         self._connected = controller.is_connected
 
         self._max_temp = controller.max_setpoint
