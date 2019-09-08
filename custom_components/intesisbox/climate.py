@@ -13,16 +13,25 @@ import homeassistant.helpers.config_validation as cv
 
 from homeassistant.components import persistent_notification
 from homeassistant.components.climate import PLATFORM_SCHEMA, ClimateDevice
-from homeassistant.components.climate.const import (ATTR_OPERATION_MODE,
-                                                    STATE_AUTO, STATE_COOL,
-                                                    STATE_DRY, STATE_FAN_ONLY,
-                                                    STATE_HEAT,
-                                                    SUPPORT_FAN_MODE,
-                                                    SUPPORT_OPERATION_MODE,
-                                                    SUPPORT_SWING_MODE,
-                                                    SUPPORT_TARGET_TEMPERATURE)
-from homeassistant.const import (ATTR_TEMPERATURE, CONF_HOST, CONF_NAME,
-                                 STATE_OFF, STATE_UNKNOWN, TEMP_CELSIUS)
+from homeassistant.components.climate.const import (
+    ATTR_HVAC_MODE,
+    HVAC_MODE_HEAT_COOL,
+    HVAC_MODE_COOL,
+    HVAC_MODE_DRY,
+    HVAC_MODE_FAN_ONLY,
+    HVAC_MODE_HEAT,
+    HVAC_MODE_OFF,
+    SUPPORT_FAN_MODE,
+    SUPPORT_SWING_MODE,
+    SUPPORT_TARGET_TEMPERATURE
+    )
+from homeassistant.const import (
+    ATTR_TEMPERATURE,
+    CONF_HOST,
+    CONF_NAME,
+    STATE_UNKNOWN,
+    TEMP_CELSIUS
+    )
 from homeassistant.exceptions import PlatformNotReady
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,21 +49,21 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 SCAN_INTERVAL = timedelta(seconds=300)
 
 MAP_OPERATION_MODE_TO_HA = {
-    'AUTO': STATE_AUTO,
-    'FAN': STATE_FAN_ONLY,
-    'HEAT': STATE_HEAT,
-    'DRY': STATE_DRY,
-    'COOL': STATE_COOL,
-    'OFF': STATE_OFF
+    'AUTO': HVAC_MODE_HEAT_COOL,
+    'FAN': HVAC_MODE_FAN_ONLY,
+    'HEAT': HVAC_MODE_HEAT,
+    'DRY': HVAC_MODE_DRY,
+    'COOL': HVAC_MODE_COOL,
+    'OFF': HVAC_MODE_OFF
 }
 MAP_OPERATION_MODE_TO_IB = dict(map(reversed, MAP_OPERATION_MODE_TO_HA.items()))
 
 MAP_STATE_ICONS = {
-    STATE_HEAT: 'mdi:white-balance-sunny',
-    STATE_AUTO: 'mdi:cached',
-    STATE_COOL: 'mdi:snowflake',
-    STATE_DRY: 'mdi:water-off',
-    STATE_FAN_ONLY: 'mdi:fan',
+    HVAC_MODE_HEAT: 'mdi:white-balance-sunny',
+    HVAC_MODE_HEAT_COOL: 'mdi:cached',
+    HVAC_MODE_COOL: 'mdi:snowflake',
+    HVAC_MODE_DRY: 'mdi:water-off',
+    HVAC_MODE_FAN_ONLY: 'mdi:fan',
 }
 
 SWING_ON = 'SWING'
@@ -65,7 +74,7 @@ SWING_LIST_BOTH = 'Both'
 SWING_LIST_STOP = 'Auto'
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    """Create the IntesisHome climate devices."""
+    """Create the Intesisbox climate devices."""
     from . import intesisbox
     controller = intesisbox.IntesisBox(config[CONF_HOST], loop=hass.loop)
     controller.connect()
@@ -78,7 +87,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
 
 class IntesisBoxAC(ClimateDevice):
-    """Represents an Intesishome air conditioning device."""
+    """Represents an Intesisbox air conditioning device."""
 
     def __init__(self, controller, name):
         """Initialize the thermostat."""
@@ -91,7 +100,7 @@ class IntesisBoxAC(ClimateDevice):
 
         self._max_temp = controller.max_setpoint
         self._min_temp = controller.min_setpoint
-        self._target_temp = None
+        self._target_temperature = None
         self._current_temp = None
         self._rssi = None
         self._swing_list = []
@@ -107,12 +116,12 @@ class IntesisBoxAC(ClimateDevice):
         self._fan_speed = None
 
         # Setup operation list
-        self._operation_list = [STATE_OFF]
+        self._operation_list = [HVAC_MODE_OFF]
         for operation in self._controller.operation_list:
             self._operation_list.append(MAP_OPERATION_MODE_TO_HA[operation])
         
         # Setup feature support
-        self._base_features = (SUPPORT_OPERATION_MODE | SUPPORT_TARGET_TEMPERATURE)
+        self._base_features = (SUPPORT_TARGET_TEMPERATURE)
         if len(self._fan_list) > 0:
             self._base_features |= SUPPORT_FAN_MODE
         
@@ -136,7 +145,7 @@ class IntesisBoxAC(ClimateDevice):
 
     @property
     def temperature_unit(self):
-        """Intesishome API uses celsius on the backend."""
+        """Intesisbox API uses celsius on the backend."""
         return TEMP_CELSIUS
 
     @property
@@ -156,10 +165,10 @@ class IntesisBoxAC(ClimateDevice):
 
     def set_temperature(self, **kwargs):
         """Set new target temperature."""
-        _LOGGER.debug("IntesisHome Set Temperature=%s")
+        _LOGGER.debug("Intesisbox Set Temperature=%s")
 
         temperature = kwargs.get(ATTR_TEMPERATURE)
-        operation_mode = kwargs.get(ATTR_OPERATION_MODE)
+        operation_mode = kwargs.get(ATTR_HVAC_MODE)
 
         if operation_mode:
             self.set_operation_mode(operation_mode)
@@ -167,18 +176,18 @@ class IntesisBoxAC(ClimateDevice):
         if temperature:
             self._controller.set_temperature(temperature)
 
-    def set_operation_mode(self, operation_mode):
+    def set_hvac_mode(self, operation_mode):
         """Set operation mode."""
-        _LOGGER.debug("IntesisHome Set Mode=%s", operation_mode)
-        if operation_mode == STATE_OFF:
+        _LOGGER.debug("Intesisbox Set Mode=%s", operation_mode)
+        if operation_mode == HVAC_MODE_OFF:
             self._controller.set_power_off()
             self._power = False
         else:
             self._controller.set_mode(MAP_OPERATION_MODE_TO_IB[operation_mode])
 
             # Send the temperature again in case changing modes has changed it
-            if self._target_temp:
-                self._controller.set_temperature(self._target_temp)
+            if self._target_temperature:
+                self._controller.set_temperature(self._target_temperature)
 
         self.hass.async_add_job(self.schedule_update_ha_state, False)
 
@@ -189,7 +198,7 @@ class IntesisBoxAC(ClimateDevice):
 
     def turn_off(self):
         """Turn thermostat off."""
-        self.set_operation_mode(STATE_OFF)
+        self.set_operation_mode(HVAC_MODE_OFF)
 
     def set_fan_mode(self, fan_mode):
         """Set fan mode (from quiet, low, medium, high, auto)."""
@@ -222,7 +231,7 @@ class IntesisBoxAC(ClimateDevice):
         self._current_temp = self._controller.ambient_temperature
         self._min_temp = self._controller.min_setpoint
         self._max_temp = self._controller.max_setpoint
-        self._target_temp = self._controller.setpoint
+        self._target_temperature = self._controller.setpoint
 
         if self._controller.fan_speed:
             self._fan_speed = self._controller.fan_speed.title()
@@ -241,9 +250,9 @@ class IntesisBoxAC(ClimateDevice):
         if self._connected != self._controller.is_connected:
             self._connected = self._controller.is_connected
             if self._connected:
-                _LOGGER.debug("Connection to IntesisHome was restored.")
+                _LOGGER.debug("Connection to Intesisbox was restored.")
             else:
-                _LOGGER.debug("Lost connection to IntesisHome.")
+                _LOGGER.debug("Lost connection to Intesisbox.")
     
     async def async_will_remove_from_hass(self):
         """Shutdown the controller when the device is being removed."""
@@ -259,7 +268,7 @@ class IntesisBoxAC(ClimateDevice):
 
     def update_callback(self):
         """Let HA know there has been an update from the controller."""
-        _LOGGER.debug("IntesisHome sent a status update.")
+        _LOGGER.debug("Intesisbox sent a status update.")
         if self.hass:
             self.hass.async_add_job(self.schedule_update_ha_state, True)
 
@@ -280,23 +289,23 @@ class IntesisBoxAC(ClimateDevice):
 
     @property
     def should_poll(self):
-        """Poll for updates if pyIntesisHome doesn't have a socket open."""
+        """Poll for updates if pyIntesisbox doesn't have a socket open."""
         # This could be switched on controller.is_connected, but HA doesn't
         # seem to handle dynamically changing from push to poll.
         return True
 
     @property
-    def operation_list(self):
+    def hvac_modes(self):
         """List of available operation modes."""
         return self._operation_list
 
     @property
-    def current_fan_mode(self):
+    def fan_mode(self):
         """Return whether the fan is on."""
         return self._fan_speed
 
     @property
-    def current_swing_mode(self):
+    def swing_mode(self):
         """Return current swing mode."""
         if self._vswing and self._hswing:
             return SWING_LIST_BOTH
@@ -308,12 +317,12 @@ class IntesisBoxAC(ClimateDevice):
             return SWING_LIST_STOP
 
     @property
-    def fan_list(self):
+    def fan_modes(self):
         """List of available fan modes."""
         return self._fan_list
 
     @property
-    def swing_list(self):
+    def swing_modes(self):
         """List of available swing positions."""
         return self._swing_list
 
@@ -333,20 +342,18 @@ class IntesisBoxAC(ClimateDevice):
         return self._current_temp
 
     @property
-    def current_operation(self):
+    def hvac_mode(self):
         """Return the current mode of operation if unit is on."""
         if self._power:
             return self._current_operation
-        return STATE_OFF
+        return HVAC_MODE_OFF
 
     @property
     def target_temperature(self):
         """Return the current setpoint temperature if unit is on."""
-        return self._target_temp
+        return self._target_temperature
 
     @property
     def supported_features(self):
         """Return the list of supported features."""
         return self._base_features
-
-
