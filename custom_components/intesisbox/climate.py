@@ -113,18 +113,22 @@ class IntesisBoxAC(ClimateDevice):
 
         # Setup fan list
         self._fan_list = [x.title() for x in self._controller.fan_speed_list]
+        if len(self._fan_list) < 1:
+          raise PlatformNotReady
         self._fan_speed = None
 
         # Setup operation list
         self._operation_list = [HVAC_MODE_OFF]
         for operation in self._controller.operation_list:
             self._operation_list.append(MAP_OPERATION_MODE_TO_HA[operation])
-        
+        if len(self._operation_list) == 1:
+           raise PlatformNotReady
+
         # Setup feature support
         self._base_features = (SUPPORT_TARGET_TEMPERATURE)
         if len(self._fan_list) > 0:
             self._base_features |= SUPPORT_FAN_MODE
-        
+
         # Setup swing control
         if self._has_swing_control:
             self._base_features |= SUPPORT_SWING_MODE
@@ -134,7 +138,7 @@ class IntesisBoxAC(ClimateDevice):
             if SWING_ON in self._controller.vane_vertical_list:
                 self._swing_list.append(SWING_LIST_VERTICAL)
             if len(self._swing_list) > 2:
-                self._swing_list.append(SWING_LIST_BOTH)            
+                self._swing_list.append(SWING_LIST_BOTH)
 
         self._controller.add_update_callback(self.update_callback)
 
@@ -253,7 +257,7 @@ class IntesisBoxAC(ClimateDevice):
                 _LOGGER.debug("Connection to Intesisbox was restored.")
             else:
                 _LOGGER.debug("Lost connection to Intesisbox.")
-    
+
     async def async_will_remove_from_hass(self):
         """Shutdown the controller when the device is being removed."""
         self._controller.stop()
