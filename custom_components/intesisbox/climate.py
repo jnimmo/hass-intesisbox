@@ -12,7 +12,7 @@ import voluptuous as vol
 import homeassistant.helpers.config_validation as cv
 
 from homeassistant.components import persistent_notification
-from homeassistant.components.climate import PLATFORM_SCHEMA, ClimateDevice
+from homeassistant.components.climate import PLATFORM_SCHEMA, ClimateEntity
 from homeassistant.components.climate.const import (
     ATTR_HVAC_MODE,
     HVAC_MODE_HEAT_COOL,
@@ -86,7 +86,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     async_add_entities([IntesisBoxAC(controller, name)],True)
 
 
-class IntesisBoxAC(ClimateDevice):
+class IntesisBoxAC(ClimateEntity):
     """Represents an Intesisbox air conditioning device."""
 
     def __init__(self, controller, name):
