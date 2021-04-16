@@ -1,6 +1,7 @@
 {
   "domain": "intesisbox",
   "name": "IntesisBox",
+	"version": "0.97",
   "documentation": "https://github.com/jnimmo/hass-intesisbox",
   "dependencies": [],
   "codeowners": ["@jnimmo"],

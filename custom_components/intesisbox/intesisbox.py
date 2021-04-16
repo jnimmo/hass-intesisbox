@@ -6,6 +6,7 @@ import queue
 import sys
 from optparse import OptionParser
 from asyncio import ensure_future
+from time import sleep
 
 _LOGGER = logging.getLogger('pyintesisbox')
 
@@ -69,10 +70,15 @@ class IntesisBox(asyncio.Protocol):
         self._transport = transport
 
         self._transport.write("ID\r".encode('ascii'))
+        sleep(1)
         self._transport.write("LIMITS:SETPTEMP\r".encode('ascii'))
+        sleep(1)
         self._transport.write("LIMITS:FANSP\r".encode('ascii'))
+        sleep(1)
         self._transport.write("LIMITS:MODE\r".encode('ascii'))
+        sleep(1)
         self._transport.write("LIMITS:VANEUD\r".encode('ascii'))
+        sleep(1)
         self._transport.write("LIMITS:VANELR\r".encode('ascii'))
 
     def data_received(self, data):
@@ -93,6 +99,7 @@ class IntesisBox(asyncio.Protocol):
                     self._parse_change_received(args)
                 elif cmd == 'LIMITS':
                     self._parse_limits_received(args)
+
         self._send_update_callback()
 
     def _parse_id_received(self, args):
@@ -103,7 +110,7 @@ class IntesisBox(asyncio.Protocol):
             self._mac = info[1]
             self._firmversion = info[4]
             self._rssi = info[5]
-    
+
     def _parse_change_received(self, args):
         function = args.split(',')[0]
         value = args.split(',')[1]
@@ -145,7 +152,7 @@ class IntesisBox(asyncio.Protocol):
                 # Must poll to get the authentication token
                 if self._ip and self._port:
                     # Create asyncio socket
-                    coro = self._eventLoop.create_connection(lambda: self, 
+                    coro = self._eventLoop.create_connection(lambda: self,
                                                              self._ip,
                                                              self._port)
                     _LOGGER.debug('Opening connection to IntesisBox %s:%s',
@@ -198,7 +205,7 @@ class IntesisBox(asyncio.Protocol):
 
         if mode in MODES:
             self._set_value(FUNCTION_MODE, mode)
-        
+
     def set_mode_dry(self):
         """Public method to set device to dry asynchronously."""
         self._set_value(FUNCTION_MODE, MODE_DRY)
@@ -218,7 +225,7 @@ class IntesisBox(asyncio.Protocol):
     @property
     def vane_horizontal_list(self):
         return self._horizontal_vane_list
-        
+
     @property
     def vane_vertical_list(self):
         return self._vertical_vane_list
