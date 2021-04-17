@@ -5,5 +5,6 @@
   "documentation": "https://github.com/jnimmo/hass-intesisbox",
   "dependencies": [],
   "codeowners": ["@jnimmo"],
-  "requirements": []
+  "requirements": [],
+  "issue_tracker": "https://github.com/jnimmo/hass-intesisbox/issues"
 }
