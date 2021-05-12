@@ -2,7 +2,6 @@
 Emulates an IntesisBox device on TCP port 3310 
 """
 import asyncio
-from time import sleep
 
 MODE_AUTO = 'AUTO'
 MODE_DRY = 'DRY'
@@ -88,7 +87,6 @@ class IntesisBoxEmulator(asyncio.Protocol):
                     response = 'LIMITS:MODE,[AUTO,HEAT,DRY,COOL,FAN]'
 
             response += '\r\n'
-            sleep(0.5)
             self.transport.write(response.encode('ascii'))
 
 async def main(host, port):

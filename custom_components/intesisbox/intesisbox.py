@@ -37,8 +37,6 @@ FUNCTION_ERRCODE = 'ERRCODE'
 
 NULL_VALUE = '32768'
 
-class IHConnectionError(Exception):
-    pass
 
 class IntesisBox(asyncio.Protocol):
     def __init__(self, ip, port=3310, loop=None):
@@ -47,10 +45,8 @@ class IntesisBox(asyncio.Protocol):
         self._mac = None
         self._device = {}
         self._connectionStatus = API_DISCONNECTED
-        self._connectionRetries = 0
-        self._writer = None
-        self._reader = None
-        self._sendQueueTask = None
+        self._commandQueue = queue.Queue()
+        self._transport = None
         self._updateCallbacks = []
         self._errorCallbacks = []
         self._errorMessage = None
@@ -58,6 +54,7 @@ class IntesisBox(asyncio.Protocol):
         self._model: str = None
         self._firmversion: str = None
         self._rssi: int = None
+        self._eventLoop = loop
 
         # Limits
         self._operation_list = []
@@ -67,34 +64,26 @@ class IntesisBox(asyncio.Protocol):
         self._setpoint_minimum = None
         self._setpoint_maximum = None
 
-        if loop:
-            _LOGGER.debug("Using the provided event loop")
-            self._eventLoop = loop
-        else:
-            _LOGGER.debug("Getting the running loop from asyncio")
-            self._eventLoop = asyncio.get_running_loop()
+    def connection_made(self, transport):
+        """asyncio callback for a successful connection."""
+        _LOGGER.debug("Connected to IntesisBox")
+        self._transport = transport
 
-    async def _handle_packets(self):
-        data = True
-        while data:
-            try:
-                data = await self._reader.readuntil(b"\r\n")
-                if not data:
-                    break
-                message = data.decode("ascii")
-                await self.data_received(message)
-            except (asyncio.IncompleteReadError, TimeoutError, ConnectionResetError, OSError) as e:
-                _LOGGER.error(
-                    "Lost connection to Intesisbox %s. Exception: %s", self._ip, e
-                )
-                break
-        self._connectionStatus = API_DISCONNECTED
-        self._reader = None
-        self._writer = None
-        await self._send_update_callback()
+        self._transport.write("ID\r".encode('ascii'))
+        sleep(1)
+        self._transport.write("LIMITS:SETPTEMP\r".encode('ascii'))
+        sleep(1)
+        self._transport.write("LIMITS:FANSP\r".encode('ascii'))
+        sleep(1)
+        self._transport.write("LIMITS:MODE\r".encode('ascii'))
+        sleep(1)
+        self._transport.write("LIMITS:VANEUD\r".encode('ascii'))
+        sleep(1)
+        self._transport.write("LIMITS:VANELR\r".encode('ascii'))
 
-    async def data_received(self, decoded_data):
+    def data_received(self, data):
         """asyncio callback when data is received on the socket"""
+        decoded_data = data.decode('ascii')
         _LOGGER.debug("Data received: {}".format(decoded_data))
         linesReceived = decoded_data.splitlines()
         for line in linesReceived:
@@ -111,7 +100,7 @@ class IntesisBox(asyncio.Protocol):
                 elif cmd == 'LIMITS':
                     self._parse_limits_received(args)
 
-        await self._send_update_callback()
+        self._send_update_callback()
 
     def _parse_id_received(self, args):
         # ID:Model,MAC,IP,Protocol,Version,RSSI
@@ -155,98 +144,79 @@ class IntesisBox(asyncio.Protocol):
         _LOGGER.info('The server closed the connection')
         self._send_update_callback()
 
-    async def connect(self):
+    def connect(self):
         """Public method for connecting to IntesisHome API"""
-        if not (self._ip and self._port):
-            _LOGGER.debug("Missing IP address or port.")
-
-        self._connectionRetries = 0
-        while self._connectionStatus == API_DISCONNECTED:
+        if self._connectionStatus == API_DISCONNECTED:
             self._connectionStatus = API_CONNECTING
-            if self._connectionRetries > 0:
-                _LOGGER.debug(
-                    "Couldn't connect to IntesisBox, retrying in %i minutes", self._connectionRetries
-                )
-                await asyncio.sleep(self._connectionRetries * 60)
             try:
-                # Create asyncio socket
-                self._reader, self._writer = await asyncio.open_connection(
-                    self._ip, self._port
-                )
-                _LOGGER.debug('Opening connection to IntesisBox %s:%s',
-                            self._ip, self._port)
-                self._eventLoop.create_task(self._handle_packets())
+                # Must poll to get the authentication token
+                if self._ip and self._port:
+                    # Create asyncio socket
+                    coro = self._eventLoop.create_connection(lambda: self,
+                                                             self._ip,
+                                                             self._port)
+                    _LOGGER.debug('Opening connection to IntesisBox %s:%s',
+                                  self._ip, self._port)
+                    ensure_future(coro, loop=self._eventLoop)
+                else:
+                    _LOGGER.debug("Missing IP address or port.")
 
-            except Exception as ex:
-                _LOGGER.debug('%s Exception. %s / %s', type(ex), repr(ex.args), ex)
-                self._connectionRetries += 1
+            except Exception as e:
+                _LOGGER.error('%s Exception. %s / %s', type(e), repr(e.args), e)
                 self._connectionStatus = API_DISCONNECTED
-                # raise IHConnectionError from ex
 
-    async def stop(self):
-        """Public method for shutting down connectivity with the IntesisBox"""
+    def stop(self):
+        """Public method for shutting down connectivity with the envisalink."""
         self._connectionStatus = API_DISCONNECTED
-        if self._writer:
-            self._writer._transport.close()
+        self._transport.close()
 
-        if self._reader:
-            self._reader._transport.close()
+    def poll_status(self, sendcallback=False):
+        self._transport.write("GET,1:*\r".encode('ascii'))
 
-    async def poll_status(self, sendcallback=False):
-        self._writer.write("GET,1:*\r".encode('ascii'))
-        await self._writer.drain()
-
-        if len(self._operation_list) < 1: 
-            LIMITS = ["LIMITS:SETPTEMP","LIMITS:FANSP","LIMITS:MODE","LIMITS:VANEUD","LIMITS:VANELR","ID"]
-            for limit in LIMITS:
-                self._writer.write((limit + '\r').encode('ascii'))
-                await self._writer.drain()
-
-    async def set_temperature(self, setpoint):
+    def set_temperature(self, setpoint):
         """Public method for setting the temperature"""
         set_temp = int(setpoint * 10)
-        await self._set_value(FUNCTION_SETPOINT, set_temp)
+        self._set_value(FUNCTION_SETPOINT, set_temp)
 
-    async def set_fan_speed(self, fan_speed):
+    def set_fan_speed(self, fan_speed):
         """Public method to set the fan speed"""
-        await self._set_value(FUNCTION_FANSP, fan_speed)
+        self._set_value(FUNCTION_FANSP, fan_speed)
 
-    async def set_vertical_vane(self, vane: str):
+    def set_vertical_vane(self, vane: str):
         """Public method to set the vertical vane"""
-        await self._set_value(FUNCTION_VANEUD, vane)
+        self._set_value(FUNCTION_VANEUD, vane)
 
-    async def set_horizontal_vane(self, vane: str):
+    def set_horizontal_vane(self, vane: str):
         """Public method to set the horizontal vane"""
-        await self._set_value(FUNCTION_VANELR, vane)
+        self._set_value(FUNCTION_VANELR, vane)
 
-    async def _set_value(self, uid, value):
+    def _set_value(self, uid, value):
         """Internal method to send a command to the API"""
         message = "SET,{}:{},{}\r".format(1, uid, value)
         try:
-            self._writer.write(message.encode('ascii'))
-            await self._writer.drain()
+            self._transport.write(message.encode('ascii'))
             _LOGGER.debug("Data sent: {!r}".format(message))
         except Exception as e:
             _LOGGER.error('%s Exception. %s / %s', type(e), e.args, e)
 
-    async def set_mode(self, mode):
+    def set_mode(self, mode):
         if not self.is_on:
-            await self.set_power_on()
+            self.set_power_on()
 
         if mode in MODES:
-            await self._set_value(FUNCTION_MODE, mode)
+            self._set_value(FUNCTION_MODE, mode)
 
-    async def set_mode_dry(self):
+    def set_mode_dry(self):
         """Public method to set device to dry asynchronously."""
-        await self._set_value(FUNCTION_MODE, MODE_DRY)
+        self._set_value(FUNCTION_MODE, MODE_DRY)
 
-    async def set_power_off(self):
+    def set_power_off(self):
         """Public method to turn off the device asynchronously."""
-        await self._set_value(FUNCTION_ONOFF, POWER_OFF)
+        self._set_value(FUNCTION_ONOFF, POWER_OFF)
 
-    async def set_power_on(self):
+    def set_power_on(self):
         """Public method to turn on the device asynchronously."""
-        await self._set_value(FUNCTION_ONOFF, POWER_ON)
+        self._set_value(FUNCTION_ONOFF, POWER_ON)
 
     @property
     def operation_list(self):
@@ -305,7 +275,7 @@ class IntesisBox(asyncio.Protocol):
         """Public method returns the current temperature."""
         temperature = self._device.get(FUNCTION_AMBTEMP)
         if temperature:
-            temperature = self.twos_complement_16bit(int(temperature)) / 10
+            temperature = int(temperature) / 10
         return temperature
 
     @property
@@ -331,13 +301,23 @@ class IntesisBox(asyncio.Protocol):
         """Public method returns the current horizontal vane setting."""
         return self._device.get(FUNCTION_VANELR)
 
-    async def _send_update_callback(self):
+    def _send_update_callback(self):
         """Internal method to notify all update callback subscribers."""
         if self._updateCallbacks == []:
             _LOGGER.debug("Update callback has not been set by client.")
 
         for callback in self._updateCallbacks:
-            await callback()
+            callback()
+
+    def _send_error_callback(self, message):
+        """Internal method to notify all update callback subscribers."""
+        self._errorMessage = message
+
+        if self._errorCallbacks == []:
+            _LOGGER.debug("Error callback has not been set by client.")
+
+        for callback in self._errorCallbacks:
+            callback(message)
 
     @property
     def is_connected(self) -> bool:
@@ -354,17 +334,15 @@ class IntesisBox(asyncio.Protocol):
         """Returns true when the TCP connection is disconnected and idle."""
         return self._connectionStatus == API_DISCONNECTED
 
-    async def add_update_callback(self, method):
+    def add_update_callback(self, method):
         """Public method to add a callback subscriber."""
         self._updateCallbacks.append(method)
 
-    async def keep_alive(self):
-        """Send a keepalive command to reset it's watchdog timer."""
-        await asyncio.sleep(10, loop=self._eventLoop)
+    def add_error_callback(self, method):
+        """Public method to add a callback subscriber."""
+        self._errorCallbacks.append(method)
 
-    @staticmethod 
-    def twos_complement_16bit(val):
-        """Internal method to compute Two's Complement, to represent negative temperatures"""
-        if (val & (1 << 15)) != 0:
-            val = val - (1 << 16)
-        return val   
+    @asyncio.coroutine
+    def keep_alive(self):
+        """Send a keepalive command to reset it's watchdog timer."""
+        yield from asyncio.sleep(10, loop=self._eventLoop)

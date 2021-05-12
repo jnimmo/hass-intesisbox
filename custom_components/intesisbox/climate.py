@@ -5,7 +5,6 @@ For more details about this platform, please refer to the documentation at
 https://github.com/jnimmo/hass-intesisbox
 """
 import asyncio
-from config.custom_components.intesisbox.intesisbox import IHConnectionError
 import logging
 from datetime import timedelta
 import voluptuous as vol
@@ -77,20 +76,15 @@ SWING_LIST_STOP = 'Auto'
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     """Create the Intesisbox climate devices."""
     from . import intesisbox
-
     controller = intesisbox.IntesisBox(config[CONF_HOST], loop=hass.loop)
-    try: 
-        await controller.connect()
-        await controller.poll_status()
-    except Exception as ex:
-        _LOGGER.error("Exception connecting to IntesisBox: %s", ex)
-        raise PlatformNotReady from ex
-    
-    while not controller.device_mac_address:
-        await asyncio.sleep(1)
+    controller.connect()
+    while not controller.is_connected:
+        await asyncio.sleep(0.1)
 
+    controller.poll_status()
     name = config.get(CONF_NAME)
     async_add_entities([IntesisBoxAC(controller, name)],True)
+
 
 class IntesisBoxAC(ClimateEntity):
     """Represents an Intesisbox air conditioning device."""
@@ -104,9 +98,8 @@ class IntesisBoxAC(ClimateEntity):
         self._devicename = name
         self._connected = controller.is_connected
 
-        self._max_temp = None
-        self._min_temp = None
-        self._has_swing_control = False
+        self._max_temp = controller.max_setpoint
+        self._min_temp = controller.min_setpoint
         self._target_temperature = None
         self._current_temp = None
         self._rssi = None
@@ -115,29 +108,24 @@ class IntesisBoxAC(ClimateEntity):
         self._hswing = False
         self._power = False
         self._current_operation = STATE_UNKNOWN
-        self._base_features = (SUPPORT_TARGET_TEMPERATURE)
-        self._operation_list = [HVAC_MODE_OFF]
-
-
-    async def async_added_to_hass(self):
-        """Subscribe to event updates."""
-        _LOGGER.debug("Intesisbox %s added", repr(self._devicename))
-        await self._controller.add_update_callback(self.update_callback)
-        await self._controller.poll_status()
-
+        self._connection_retries = 0
         self._has_swing_control = self._controller.has_swing_control
-        self._max_temp = self._controller.max_setpoint
-        self._min_temp = self._controller.min_setpoint
 
         # Setup fan list
         self._fan_list = [x.title() for x in self._controller.fan_speed_list]
-        self._fan_speed = self._controller.fan_speed.title()
+        if len(self._fan_list) < 1:
+          raise PlatformNotReady
+        self._fan_speed = None
 
         # Setup operation list
+        self._operation_list = [HVAC_MODE_OFF]
         for operation in self._controller.operation_list:
             self._operation_list.append(MAP_OPERATION_MODE_TO_HA[operation])
+        if len(self._operation_list) == 1:
+           raise PlatformNotReady
 
         # Setup feature support
+        self._base_features = (SUPPORT_TARGET_TEMPERATURE)
         if len(self._fan_list) > 0:
             self._base_features |= SUPPORT_FAN_MODE
 
@@ -151,6 +139,8 @@ class IntesisBoxAC(ClimateEntity):
                 self._swing_list.append(SWING_LIST_VERTICAL)
             if len(self._swing_list) > 2:
                 self._swing_list.append(SWING_LIST_BOTH)
+
+        self._controller.add_update_callback(self.update_callback)
 
     @property
     def name(self):
@@ -177,56 +167,69 @@ class IntesisBoxAC(ClimateEntity):
 
         return attrs
 
-    async def async_set_temperature(self, **kwargs):
+    def set_temperature(self, **kwargs):
         """Set new target temperature."""
         _LOGGER.debug("Intesisbox Set Temperature=%s")
 
         temperature = kwargs.get(ATTR_TEMPERATURE)
-        hvac_mode = kwargs.get(ATTR_HVAC_MODE)
+        operation_mode = kwargs.get(ATTR_HVAC_MODE)
 
-        if hvac_mode:
-            await self.set_operation_mode(hvac_mode)
+        if operation_mode:
+            self.set_operation_mode(operation_mode)
 
         if temperature:
-            await self._controller.set_temperature(temperature)
+            self._controller.set_temperature(temperature)
 
-    async def async_set_hvac_mode(self, hvac_mode):
+    def set_hvac_mode(self, operation_mode):
         """Set operation mode."""
-        _LOGGER.debug("Intesisbox Set Mode=%s", hvac_mode)
-        if hvac_mode == HVAC_MODE_OFF:
-            await self._controller.set_power_off()
+        _LOGGER.debug("Intesisbox Set Mode=%s", operation_mode)
+        if operation_mode == HVAC_MODE_OFF:
+            self._controller.set_power_off()
             self._power = False
         else:
-            await self._controller.set_mode(MAP_OPERATION_MODE_TO_IB[hvac_mode])
+            self._controller.set_mode(MAP_OPERATION_MODE_TO_IB[operation_mode])
 
             # Send the temperature again in case changing modes has changed it
             if self._target_temperature:
-                await self._controller.set_temperature(self._target_temperature)
+                self._controller.set_temperature(self._target_temperature)
 
-    async def async_set_fan_mode(self, fan_mode):
+        self.hass.async_add_job(self.schedule_update_ha_state, False)
+
+    def turn_on(self):
+        """Turn thermostat on."""
+        self._controller.set_power_on()
+        self.hass.async_add_job(self.schedule_update_ha_state, False)
+
+    def turn_off(self):
+        """Turn thermostat off."""
+        self.set_operation_mode(HVAC_MODE_OFF)
+
+    def set_fan_mode(self, fan_mode):
         """Set fan mode (from quiet, low, medium, high, auto)."""
-        await self._controller.set_fan_speed(fan_mode.upper())
+        self._controller.set_fan_speed(fan_mode.upper())
 
-    async def async_set_swing_mode(self, swing_mode):
+    def set_swing_mode(self, swing_mode):
         """Set the vertical vane."""
         if swing_mode == SWING_LIST_BOTH:
-            await self._controller.set_vertical_vane(SWING_ON)
-            await self._controller.set_horizontal_vane(SWING_ON)
+            self._controller.set_vertical_vane(SWING_ON)
+            self._controller.set_horizontal_vane(SWING_ON)
         elif swing_mode == SWING_LIST_STOP:
-            await self._controller.set_vertical_vane(SWING_STOP)
-            await self._controller.set_horizontal_vane(SWING_STOP)
+            self._controller.set_vertical_vane(SWING_STOP)
+            self._controller.set_horizontal_vane(SWING_STOP)
         elif swing_mode == SWING_LIST_HORIZONTAL:
-            await self._controller.set_vertical_vane(SWING_STOP)
-            await self._controller.set_horizontal_vane(SWING_ON)
+            self._controller.set_vertical_vane(SWING_STOP)
+            self._controller.set_horizontal_vane(SWING_ON)
         elif swing_mode == SWING_LIST_VERTICAL:
-            await self._controller.set_vertical_vane(SWING_ON)
-            await self._controller.set_horizontal_vane(SWING_STOP)
+            self._controller.set_vertical_vane(SWING_ON)
+            self._controller.set_horizontal_vane(SWING_STOP)
 
     async def async_update(self):
         """Copy values from controller dictionary to climate device."""
         if not self._controller.is_connected:
-            await self._controller.connect()
-            await self._controller.poll_status()
+            await self.hass.async_add_executor_job(self._controller.connect)
+            self._connection_retries += 1
+        else:
+            self._connection_retries = 0
 
         self._power = self._controller.is_on
         self._current_temp = self._controller.ambient_temperature
@@ -257,7 +260,7 @@ class IntesisBoxAC(ClimateEntity):
 
     async def async_will_remove_from_hass(self):
         """Shutdown the controller when the device is being removed."""
-        await self._controller.stop()
+        self._controller.stop()
 
     @property
     def icon(self):
@@ -267,10 +270,11 @@ class IntesisBoxAC(ClimateEntity):
             icon = MAP_STATE_ICONS.get(self._current_operation)
         return icon
 
-    async def update_callback(self):
+    def update_callback(self):
         """Let HA know there has been an update from the controller."""
         _LOGGER.debug("Intesisbox sent a status update.")
-        self.async_schedule_update_ha_state(True)
+        if self.hass:
+            self.hass.async_add_job(self.schedule_update_ha_state, True)
 
     @property
     def min_temp(self):
@@ -292,7 +296,7 @@ class IntesisBoxAC(ClimateEntity):
         """Poll for updates if pyIntesisbox doesn't have a socket open."""
         # This could be switched on controller.is_connected, but HA doesn't
         # seem to handle dynamically changing from push to poll.
-        return False
+        return True
 
     @property
     def hvac_modes(self):
@@ -334,12 +338,7 @@ class IntesisBoxAC(ClimateEntity):
     @property
     def available(self) -> bool:
         """If the device hasn't been able to connect, mark as unavailable."""
-        return self._connected
-
-    @property
-    def unique_id(self):
-        """Return unique ID for this device."""
-        return self._controller.device_mac_address
+        return self._connected or self._connection_retries < 2
 
     @property
     def current_temperature(self):
