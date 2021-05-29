@@ -94,4 +94,4 @@ async def main(host, port):
     server = await loop.create_server(IntesisBoxEmulator, host, port)
     await server.serve_forever()
 
-asyncio.run(main('127.0.0.1', 3310))
+asyncio.run(main('0.0.0.0', 3310))

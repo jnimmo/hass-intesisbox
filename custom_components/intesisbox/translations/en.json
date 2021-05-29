@@ -1,0 +1,20 @@
+{
+    "config": {
+        "abort": {
+            "already_configured": "Device is already configured"
+        },
+        "error": {
+            "cannot_connect": "Failed to connect",
+            "unknown": "Unexpected error"
+        },
+        "step": {
+            "user": {
+                "data": {
+                    "host": "Host"
+                },
+                "title": "IntesisBox",
+                "description": "Integration for Intesis Home Automation Interface devices supporting the WMP protocol over the local network"
+            }
+        }
+    }
+}

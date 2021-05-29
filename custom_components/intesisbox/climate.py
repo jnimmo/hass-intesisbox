@@ -35,6 +35,8 @@ from homeassistant.const import (
     )
 from homeassistant.exceptions import PlatformNotReady
 
+from . import DOMAIN, PLATFORMS
+
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_NAME = 'Intesisbox'
@@ -83,22 +85,25 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     while not controller.is_connected:
         await asyncio.sleep(0.1)
 
-    controller.poll_status()
     name = config.get(CONF_NAME)
     unique_id = config.get(CONF_UNIQUE_ID)
     async_add_entities([IntesisBoxAC(controller, name, unique_id)],True)
 
+async def async_setup_entry(hass, entry, async_add_entities):
+    controller = hass.data[DOMAIN][entry.entry_id]
+    controller.poll_status()
+    async_add_entities([IntesisBoxAC(controller)], True)
 
 class IntesisBoxAC(ClimateEntity):
     """Represents an Intesisbox air conditioning device."""
 
-    def __init__(self, controller, name, unique_id):
+    def __init__(self, controller, name = None, unique_id = None):
         """Initialize the thermostat."""
         _LOGGER.debug('Added climate device with state')
         self._controller = controller
 
         self._deviceid = controller.device_mac_address
-        self._devicename = name
+        self._devicename = name or controller.device_mac_address
         self._unique_id = unique_id or controller.device_mac_address
         self._connected = controller.is_connected
 
@@ -160,6 +165,16 @@ class IntesisBoxAC(ClimateEntity):
     def temperature_unit(self):
         """Intesisbox API uses celsius on the backend."""
         return TEMP_CELSIUS
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": { (DOMAIN, self.unique_id) },
+            "name": self.name,
+            "manufacturer": "Intesis",
+            "model": self._controller.device_model,
+            "sw_version": self._controller.firmware_version,
+        }
 
     @property
     def device_state_attributes(self):
