@@ -253,6 +253,10 @@ class IntesisBox(asyncio.Protocol):
         return self._model
 
     @property
+    def firmware_version(self) -> str:
+        return self._firmversion
+
+    @property
     def is_on(self) -> bool:
         """Return true if the controlled device is turned on"""
         return self._device.get(FUNCTION_ONOFF) == POWER_ON
