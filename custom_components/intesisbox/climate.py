@@ -29,6 +29,7 @@ from homeassistant.const import (
     ATTR_TEMPERATURE,
     CONF_HOST,
     CONF_NAME,
+    CONF_UNIQUE_ID,
     STATE_UNKNOWN,
     TEMP_CELSIUS
     )
@@ -41,6 +42,7 @@ DEFAULT_NAME = 'Intesisbox'
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Required(CONF_HOST): cv.string,
     vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+    vol.Optional(CONF_UNIQUE_ID): cv.string,
 })
 
 # Return cached results if last scan time was less than this value.
@@ -83,19 +85,21 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
     controller.poll_status()
     name = config.get(CONF_NAME)
-    async_add_entities([IntesisBoxAC(controller, name)],True)
+    unique_id = config.get(CONF_UNIQUE_ID)
+    async_add_entities([IntesisBoxAC(controller, name, unique_id)],True)
 
 
 class IntesisBoxAC(ClimateEntity):
     """Represents an Intesisbox air conditioning device."""
 
-    def __init__(self, controller, name):
+    def __init__(self, controller, name, unique_id):
         """Initialize the thermostat."""
         _LOGGER.debug('Added climate device with state')
         self._controller = controller
 
         self._deviceid = controller.device_mac_address
         self._devicename = name
+        self._unique_id = unique_id or controller.device_mac_address
         self._connected = controller.is_connected
 
         self._max_temp = controller.max_setpoint
@@ -146,6 +150,11 @@ class IntesisBoxAC(ClimateEntity):
     def name(self):
         """Return the name of the AC device."""
         return self._devicename
+
+    @property
+    def unique_id(self):
+        """Return the unique id of the AC device."""
+        return self._unique_id
 
     @property
     def temperature_unit(self):
