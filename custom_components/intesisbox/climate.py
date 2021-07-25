@@ -50,7 +50,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 # Return cached results if last scan time was less than this value.
 # If a persistent connection is established for the controller, changes to
 # values are in realtime.
-SCAN_INTERVAL = timedelta(seconds=300)
+SCAN_INTERVAL = timedelta(seconds=60)
 
 MAP_OPERATION_MODE_TO_HA = {
     'AUTO': HVAC_MODE_HEAT_COOL,
@@ -248,6 +248,26 @@ class IntesisBoxAC(ClimateEntity):
             self._controller.set_horizontal_vane(SWING_STOP)
 
     async def async_update(self):
+        """Poll device for status update"""
+        _LOGGER.debug("Home-Assistant triggered an update.")
+
+        if not self._controller.is_connected:
+            await self.hass.async_add_executor_job(self._controller.connect)
+            self._connection_retries += 1
+        else:
+            self._connection_retries = 0
+
+        self._controller.poll_status()
+
+        # Track connection lost/restored.
+        if self._connected != self._controller.is_connected:
+            self._connected = self._controller.is_connected
+            if self._connected:
+                _LOGGER.debug("Connection to Intesisbox was restored.")
+            else:
+                _LOGGER.debug("Lost connection to Intesisbox.")
+
+    async def async_update_data(self):
         """Copy values from controller dictionary to climate device."""
         if not self._controller.is_connected:
             await self.hass.async_add_executor_job(self._controller.connect)
@@ -282,6 +302,9 @@ class IntesisBoxAC(ClimateEntity):
             else:
                 _LOGGER.debug("Lost connection to Intesisbox.")
 
+        # Copy data to ha state
+        self.async_write_ha_state()
+
     async def async_will_remove_from_hass(self):
         """Shutdown the controller when the device is being removed."""
         self._controller.stop()
@@ -298,7 +321,7 @@ class IntesisBoxAC(ClimateEntity):
         """Let HA know there has been an update from the controller."""
         _LOGGER.debug("Intesisbox sent a status update.")
         if self.hass:
-            self.hass.async_add_job(self.schedule_update_ha_state, True)
+            self.hass.async_add_job(self.async_update_data)
 
     @property
     def min_temp(self):
