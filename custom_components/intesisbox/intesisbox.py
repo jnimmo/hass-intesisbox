@@ -68,17 +68,28 @@ class IntesisBox(asyncio.Protocol):
         """asyncio callback for a successful connection."""
         _LOGGER.debug("Connected to IntesisBox")
         self._transport = transport
+        asyncio.ensure_future(self.query_initial_state())
 
+    async def keep_alive(self):
+        """Send a keepalive command to reset it's watchdog timer."""
+        while self.is_connected:
+            _LOGGER.debug("Sending keepalive")
+            self._transport.write("PING\r".encode('ascii'))
+            await asyncio.sleep(45, loop=self._eventLoop)
+        else:
+            _LOGGER.debug("Not connected, skipping keepalive")
+
+    async def query_initial_state(self):
         self._transport.write("ID\r".encode('ascii'))
-        sleep(1)
+        await asyncio.sleep(1, loop=self._eventLoop)
         self._transport.write("LIMITS:SETPTEMP\r".encode('ascii'))
-        sleep(1)
+        await asyncio.sleep(1, loop=self._eventLoop)
         self._transport.write("LIMITS:FANSP\r".encode('ascii'))
-        sleep(1)
+        await asyncio.sleep(1, loop=self._eventLoop)
         self._transport.write("LIMITS:MODE\r".encode('ascii'))
-        sleep(1)
+        await asyncio.sleep(1, loop=self._eventLoop)
         self._transport.write("LIMITS:VANEUD\r".encode('ascii'))
-        sleep(1)
+        await asyncio.sleep(1, loop=self._eventLoop)
         self._transport.write("LIMITS:VANELR\r".encode('ascii'))
 
     def data_received(self, data):
@@ -95,6 +106,7 @@ class IntesisBox(asyncio.Protocol):
                 if cmd == 'ID':
                     self._parse_id_received(args)
                     self._connectionStatus = API_AUTHENTICATED
+                    asyncio.ensure_future(self.keep_alive())
                 elif cmd == 'CHN,1':
                     self._parse_change_received(args)
                 elif cmd == 'LIMITS':
@@ -345,8 +357,3 @@ class IntesisBox(asyncio.Protocol):
     def add_error_callback(self, method):
         """Public method to add a callback subscriber."""
         self._errorCallbacks.append(method)
-
-    @asyncio.coroutine
-    def keep_alive(self):
-        """Send a keepalive command to reset it's watchdog timer."""
-        yield from asyncio.sleep(10, loop=self._eventLoop)
