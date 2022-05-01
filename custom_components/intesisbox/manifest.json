@@ -1,10 +1,12 @@
 {
   "domain": "intesisbox",
   "name": "IntesisBox",
-	"version": "0.99",
+  "version": "0.99",
   "documentation": "https://github.com/jnimmo/hass-intesisbox",
+  "issue_tracker": "https://github.com/jnimmo/hass-intesisbox/issues",
   "dependencies": [],
   "codeowners": ["@jnimmo"],
   "config_flow": true,
-  "requirements": []
+  "requirements": [],
+  "iot_class": "local_polling"
 }
