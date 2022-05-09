@@ -199,7 +199,7 @@ class IntesisBoxAC(ClimateEntity):
         operation_mode = kwargs.get(ATTR_HVAC_MODE)
 
         if operation_mode:
-            self.set_operation_mode(operation_mode)
+            self.set_hvac_mode(operation_mode)
 
         if temperature:
             self._controller.set_temperature(temperature)
@@ -226,7 +226,7 @@ class IntesisBoxAC(ClimateEntity):
 
     def turn_off(self):
         """Turn thermostat off."""
-        self.set_operation_mode(HVAC_MODE_OFF)
+        self.set_hvac_mode(HVAC_MODE_OFF)
 
     def set_fan_mode(self, fan_mode):
         """Set fan mode (from quiet, low, medium, high, auto)."""
