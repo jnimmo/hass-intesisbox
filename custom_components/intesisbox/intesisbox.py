@@ -292,6 +292,9 @@ class IntesisBox(asyncio.Protocol):
         temperature = self._device.get(FUNCTION_AMBTEMP)
         if temperature:
             temperature = int(temperature) / 10
+        # When unsupported, -32768 is reported
+        if temperature == -3276.8:
+            temperature = None
         return temperature
 
     @property
