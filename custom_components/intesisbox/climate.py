@@ -177,7 +177,7 @@ class IntesisBoxAC(ClimateEntity):
         }
 
     @property
-    def device_state_attributes(self):
+    def extra_state_attributes(self):
         """Return the device specific state attributes."""
         attrs = {}
         if self._has_swing_control:
@@ -250,6 +250,7 @@ class IntesisBoxAC(ClimateEntity):
     async def async_update(self):
         """Copy values from controller dictionary to climate device."""
         if not self._controller.is_connected:
+            await asyncio.sleep(1) # per device specs, wait min 1 sec before re-connecting
             await self.hass.async_add_executor_job(self._controller.connect)
             self._connection_retries += 1
         else:
