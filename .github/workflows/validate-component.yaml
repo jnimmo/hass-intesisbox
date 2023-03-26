@@ -16,6 +16,7 @@ jobs:
         uses: "hacs/action@main"
         with:
           category: "integration"
+          ignore: "brands topics"
   validate_hassfest:
     name: "Hassfest Validation"
     runs-on: "ubuntu-latest"
