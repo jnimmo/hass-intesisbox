@@ -95,7 +95,8 @@ class IntesisBox(asyncio.Protocol):
     def data_received(self, data):
         """asyncio callback when data is received on the socket"""
         decoded_data = data.decode('ascii')
-        _LOGGER.debug("Data received: {}".format(decoded_data))
+        _LOGGER.debug(f"Data received: {decoded_data}")
+
         linesReceived = decoded_data.splitlines()
         for line in linesReceived:
             cmdList = line.split(':', 1)
@@ -148,6 +149,16 @@ class IntesisBox(asyncio.Protocol):
                 self._vertical_vane_list = values
             elif function == FUNCTION_VANELR:
                 self._horizontal_vane_list = values
+
+            _LOGGER.debug(
+                "Updated limits: ",
+                f"{self._setpoint_minimum=}",
+                f"{self._setpoint_maximum=}",
+                f"{self._fan_speed_list=}",
+                f"{self._operation_list=}",
+                f"{self._vertical_vane_list=}",
+                f"{self._horizontal_vane_list=}",
+            )
         return
 
     def connection_lost(self, exc):
