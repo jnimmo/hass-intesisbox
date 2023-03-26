@@ -35,7 +35,7 @@ FUNCTION_AMBTEMP = 'AMBTEMP'
 FUNCTION_ERRSTATUS = 'ERRSTATUS'
 FUNCTION_ERRCODE = 'ERRCODE'
 
-NULL_VALUE = '32768'
+NULL_VALUE = '-32768'
 
 
 class IntesisBox(asyncio.Protocol):
@@ -329,9 +329,6 @@ class IntesisBox(asyncio.Protocol):
         temperature = self._device.get(FUNCTION_AMBTEMP)
         if temperature:
             temperature = int(temperature) / 10
-        # When unsupported, -32768 is reported
-        if temperature == -3276.8:
-            temperature = None
         return temperature
 
     @property
