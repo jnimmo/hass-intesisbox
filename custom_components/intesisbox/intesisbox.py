@@ -74,7 +74,7 @@ class IntesisBox(asyncio.Protocol):
         """Send a keepalive command to reset it's watchdog timer."""
         while self.is_connected:
             _LOGGER.debug("Sending keepalive")
-            self._transport.write("PING\r".encode('ascii'))
+            self._write("PING")
             await asyncio.sleep(45)
         else:
             _LOGGER.debug("Not connected, skipping keepalive")
@@ -90,8 +90,12 @@ class IntesisBox(asyncio.Protocol):
             "GET,1:*",
         ]
         for cmd in cmds:
-            self._transport.write(f"{cmd}\r".encode('ascii'))
+            self._write(cmd)
             await asyncio.sleep(1)
+
+    def _write(self, cmd):
+        self._transport.write(f"{cmd}\r".encode('ascii'))
+        _LOGGER.debug(f"Data sent: {cmd!r}")
 
     def data_received(self, data):
         """asyncio callback when data is received on the socket"""
@@ -204,7 +208,7 @@ class IntesisBox(asyncio.Protocol):
         self._transport.close()
 
     def poll_status(self, sendcallback=False):
-        self._transport.write("GET,1:*\r".encode('ascii'))
+        self._write("GET,1:*")
 
     def set_temperature(self, setpoint):
         """Public method for setting the temperature"""
@@ -225,10 +229,8 @@ class IntesisBox(asyncio.Protocol):
 
     def _set_value(self, uid, value):
         """Internal method to send a command to the API"""
-        message = "SET,{}:{},{}\r".format(1, uid, value)
         try:
-            self._transport.write(message.encode('ascii'))
-            _LOGGER.debug("Data sent: {!r}".format(message))
+            self._write(f"SET,1:{uid},{value}")
         except Exception as e:
             _LOGGER.error('%s Exception. %s / %s', type(e), e.args, e)
 
