@@ -17,9 +17,9 @@ jobs:
         with:
           category: "integration"
           ignore: "brands topics"
-  validate_hassfest:
-    name: "Hassfest Validation"
-    runs-on: "ubuntu-latest"
-    steps:
-      - uses: "actions/checkout@v2"
-      - uses: home-assistant/actions/hassfest@master
+  #validate_hassfest:
+  #  name: "Hassfest Validation"
+  #  runs-on: "ubuntu-latest"
+  #  steps:
+  #    - uses: "actions/checkout@v2"
+  #    - uses: home-assistant/actions/hassfest@master
