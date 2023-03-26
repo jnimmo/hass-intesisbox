@@ -98,6 +98,8 @@ class IntesisBox(asyncio.Protocol):
         _LOGGER.debug(f"Data received: {decoded_data}")
 
         linesReceived = decoded_data.splitlines()
+        statusChanged = False
+
         for line in linesReceived:
             cmdList = line.split(':', 1)
             cmd = cmdList[0]
@@ -108,12 +110,16 @@ class IntesisBox(asyncio.Protocol):
                     self._parse_id_received(args)
                     self._connectionStatus = API_AUTHENTICATED
                     asyncio.ensure_future(self.keep_alive())
+                    statusChanged = True
                 elif cmd == 'CHN,1':
                     self._parse_change_received(args)
+                    statusChanged = True
                 elif cmd == 'LIMITS':
                     self._parse_limits_received(args)
+                    statusChanged = True
 
-        self._send_update_callback()
+        if statusChanged:
+            self._send_update_callback()
 
     def _parse_id_received(self, args):
         # ID:Model,MAC,IP,Protocol,Version,RSSI
