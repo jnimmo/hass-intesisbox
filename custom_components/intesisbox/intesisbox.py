@@ -172,10 +172,13 @@ class IntesisBox(asyncio.Protocol):
                     ensure_future(coro, loop=self._eventLoop)
                 else:
                     _LOGGER.debug("Missing IP address or port.")
+                    self._connectionStatus = API_DISCONNECTED
 
             except Exception as e:
                 _LOGGER.error('%s Exception. %s / %s', type(e), repr(e.args), e)
                 self._connectionStatus = API_DISCONNECTED
+        else:
+            _LOGGER.debug('connect() called but already connecting')
 
     def stop(self):
         """Public method for shutting down connectivity with the envisalink."""
