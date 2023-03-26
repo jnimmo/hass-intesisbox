@@ -80,17 +80,18 @@ class IntesisBox(asyncio.Protocol):
             _LOGGER.debug("Not connected, skipping keepalive")
 
     async def query_initial_state(self):
-        self._transport.write("ID\r".encode('ascii'))
-        await asyncio.sleep(1)
-        self._transport.write("LIMITS:SETPTEMP\r".encode('ascii'))
-        await asyncio.sleep(1)
-        self._transport.write("LIMITS:FANSP\r".encode('ascii'))
-        await asyncio.sleep(1)
-        self._transport.write("LIMITS:MODE\r".encode('ascii'))
-        await asyncio.sleep(1)
-        self._transport.write("LIMITS:VANEUD\r".encode('ascii'))
-        await asyncio.sleep(1)
-        self._transport.write("LIMITS:VANELR\r".encode('ascii'))
+        cmds = [
+            "ID",
+            "LIMITS:SETPTEMP",
+            "LIMITS:FANSP",
+            "LIMITS:MODE",
+            "LIMITS:VANEUD",
+            "LIMITS:VANELR",
+            "GET,1:*",
+        ]
+        for cmd in cmds:
+            self._transport.write(f"{cmd}\r".encode('ascii'))
+            await asyncio.sleep(1)
 
     def data_received(self, data):
         """asyncio callback when data is received on the socket"""
