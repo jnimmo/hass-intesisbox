@@ -35,7 +35,7 @@ FUNCTION_AMBTEMP = 'AMBTEMP'
 FUNCTION_ERRSTATUS = 'ERRSTATUS'
 FUNCTION_ERRCODE = 'ERRCODE'
 
-NULL_VALUE = '-32768'
+NULL_VALUES = ['-32768','32768']
 
 
 class IntesisBox(asyncio.Protocol):
@@ -144,7 +144,7 @@ class IntesisBox(asyncio.Protocol):
     def _parse_change_received(self, args):
         function = args.split(',')[0]
         value = args.split(',')[1]
-        if value == NULL_VALUE:
+        if value in NULL_VALUES:
             value = None
         self._device[function] = value
 
