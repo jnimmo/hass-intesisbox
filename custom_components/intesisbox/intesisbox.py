@@ -99,10 +99,9 @@ class IntesisBox(asyncio.Protocol):
 
     def data_received(self, data):
         """asyncio callback when data is received on the socket"""
-        decoded_data = data.decode('ascii')
-        _LOGGER.debug(f"Data received: {decoded_data}")
+        _LOGGER.debug(f"Data received: {data!r}")
 
-        linesReceived = decoded_data.splitlines()
+        linesReceived = data.decode('ascii').splitlines()
         statusChanged = False
 
         for line in linesReceived:
