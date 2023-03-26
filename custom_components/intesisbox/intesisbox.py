@@ -132,12 +132,23 @@ class IntesisBox(asyncio.Protocol):
             self._firmversion = info[4]
             self._rssi = info[5]
 
+            _LOGGER.debug(
+                "Updated info:",
+                f"model:{self._model}",
+                f"mac:{self._mac}",
+                f"version:{self._firmversion}",
+                f"rssi:{self._rssi}",
+            )
+
+
     def _parse_change_received(self, args):
         function = args.split(',')[0]
         value = args.split(',')[1]
         if value == NULL_VALUE:
             value = None
         self._device[function] = value
+
+        _LOGGER.debug(f"Updated state: {self._device!r}")
 
     def _parse_limits_received(self, args):
         split_args = args.split(',', 1)
