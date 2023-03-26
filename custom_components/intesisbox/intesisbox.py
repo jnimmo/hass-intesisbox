@@ -8,7 +8,7 @@ from optparse import OptionParser
 from asyncio import ensure_future
 from time import sleep
 
-_LOGGER = logging.getLogger('pyintesisbox')
+_LOGGER = logging.getLogger(__name__)
 
 API_DISCONNECTED = "Disconnected"
 API_CONNECTING = "Connecting"
