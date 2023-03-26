@@ -87,7 +87,6 @@ class IntesisBox(asyncio.Protocol):
             "LIMITS:MODE",
             "LIMITS:VANEUD",
             "LIMITS:VANELR",
-            "GET,1:*",
         ]
         for cmd in cmds:
             self._write(cmd)
@@ -113,7 +112,7 @@ class IntesisBox(asyncio.Protocol):
                     self._parse_id_received(args)
                     self._connectionStatus = API_AUTHENTICATED
                     asyncio.ensure_future(self.keep_alive())
-                    statusChanged = True
+                    asyncio.ensure_future(self.poll_status())
                 elif cmd == 'CHN,1':
                     self._parse_change_received(args)
                     statusChanged = True
@@ -205,8 +204,14 @@ class IntesisBox(asyncio.Protocol):
         self._connectionStatus = API_DISCONNECTED
         self._transport.close()
 
-    def poll_status(self, sendcallback=False):
-        self._write("GET,1:*")
+    async def poll_status(self, sendcallback=False):
+        """Periodically poll for updates since the controllers don't always update reliably"""
+        while self.is_connected:
+            _LOGGER.debug("Polling for update")
+            self._write("GET,1:*")
+            await asyncio.sleep(60*5) # 5 minutes
+        else:
+            _LOGGER.debug("Not connected, skipping poll_status()")
 
     def set_temperature(self, setpoint):
         """Public method for setting the temperature"""
