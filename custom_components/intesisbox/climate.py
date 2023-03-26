@@ -91,7 +91,6 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
 async def async_setup_entry(hass, entry, async_add_entities):
     controller = hass.data[DOMAIN][entry.entry_id]
-    controller.poll_status()
     async_add_entities([IntesisBoxAC(controller)], True)
 
 class IntesisBoxAC(ClimateEntity):
@@ -250,7 +249,7 @@ class IntesisBoxAC(ClimateEntity):
     async def async_update(self):
         """Copy values from controller dictionary to climate device."""
         if not self._controller.is_connected:
-            await asyncio.sleep(1) # per device specs, wait min 1 sec before re-connecting
+            await asyncio.sleep(60) # per device specs, wait min 1 sec before re-connecting
             await self.hass.async_add_executor_job(self._controller.connect)
             self._connection_retries += 1
         else:

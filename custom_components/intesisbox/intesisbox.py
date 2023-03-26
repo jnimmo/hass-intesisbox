@@ -8,7 +8,7 @@ from optparse import OptionParser
 from asyncio import ensure_future
 from time import sleep
 
-_LOGGER = logging.getLogger('pyintesisbox')
+_LOGGER = logging.getLogger(__name__)
 
 API_DISCONNECTED = "Disconnected"
 API_CONNECTING = "Connecting"
@@ -35,7 +35,7 @@ FUNCTION_AMBTEMP = 'AMBTEMP'
 FUNCTION_ERRSTATUS = 'ERRSTATUS'
 FUNCTION_ERRCODE = 'ERRCODE'
 
-NULL_VALUE = '32768'
+NULL_VALUE = '-32768'
 
 
 class IntesisBox(asyncio.Protocol):
@@ -74,30 +74,35 @@ class IntesisBox(asyncio.Protocol):
         """Send a keepalive command to reset it's watchdog timer."""
         while self.is_connected:
             _LOGGER.debug("Sending keepalive")
-            self._transport.write("PING\r".encode('ascii'))
+            self._write("PING")
             await asyncio.sleep(45)
         else:
             _LOGGER.debug("Not connected, skipping keepalive")
 
     async def query_initial_state(self):
-        self._transport.write("ID\r".encode('ascii'))
-        await asyncio.sleep(1)
-        self._transport.write("LIMITS:SETPTEMP\r".encode('ascii'))
-        await asyncio.sleep(1)
-        self._transport.write("LIMITS:FANSP\r".encode('ascii'))
-        await asyncio.sleep(1)
-        self._transport.write("LIMITS:MODE\r".encode('ascii'))
-        await asyncio.sleep(1)
-        self._transport.write("LIMITS:VANEUD\r".encode('ascii'))
-        await asyncio.sleep(1)
-        self._transport.write("LIMITS:VANELR\r".encode('ascii'))
+        cmds = [
+            "ID",
+            "LIMITS:SETPTEMP",
+            "LIMITS:FANSP",
+            "LIMITS:MODE",
+            "LIMITS:VANEUD",
+            "LIMITS:VANELR",
+        ]
+        for cmd in cmds:
+            self._write(cmd)
+            await asyncio.sleep(1)
+
+    def _write(self, cmd):
+        self._transport.write(f"{cmd}\r".encode('ascii'))
+        _LOGGER.debug(f"Data sent: {cmd!r}")
 
     def data_received(self, data):
         """asyncio callback when data is received on the socket"""
-        decoded_data = data.decode('ascii')
-        _LOGGER.debug("Data received: {}".format(decoded_data))
-        linesReceived = decoded_data.splitlines()
+        linesReceived = data.decode('ascii').splitlines()
+        statusChanged = False
+
         for line in linesReceived:
+            _LOGGER.debug(f"Data received: {line!r}")
             cmdList = line.split(':', 1)
             cmd = cmdList[0]
             args = None
@@ -107,12 +112,16 @@ class IntesisBox(asyncio.Protocol):
                     self._parse_id_received(args)
                     self._connectionStatus = API_AUTHENTICATED
                     asyncio.ensure_future(self.keep_alive())
+                    asyncio.ensure_future(self.poll_status())
                 elif cmd == 'CHN,1':
                     self._parse_change_received(args)
+                    statusChanged = True
                 elif cmd == 'LIMITS':
                     self._parse_limits_received(args)
+                    statusChanged = True
 
-        self._send_update_callback()
+        if statusChanged:
+            self._send_update_callback()
 
     def _parse_id_received(self, args):
         # ID:Model,MAC,IP,Protocol,Version,RSSI
@@ -123,12 +132,23 @@ class IntesisBox(asyncio.Protocol):
             self._firmversion = info[4]
             self._rssi = info[5]
 
+            _LOGGER.debug(
+                "Updated info:",
+                f"model:{self._model}",
+                f"mac:{self._mac}",
+                f"version:{self._firmversion}",
+                f"rssi:{self._rssi}",
+            )
+
+
     def _parse_change_received(self, args):
         function = args.split(',')[0]
         value = args.split(',')[1]
         if value == NULL_VALUE:
             value = None
         self._device[function] = value
+
+        _LOGGER.debug(f"Updated state: {self._device!r}")
 
     def _parse_limits_received(self, args):
         split_args = args.split(',', 1)
@@ -148,6 +168,16 @@ class IntesisBox(asyncio.Protocol):
                 self._vertical_vane_list = values
             elif function == FUNCTION_VANELR:
                 self._horizontal_vane_list = values
+
+            _LOGGER.debug(
+                "Updated limits: ",
+                f"{self._setpoint_minimum=}",
+                f"{self._setpoint_maximum=}",
+                f"{self._fan_speed_list=}",
+                f"{self._operation_list=}",
+                f"{self._vertical_vane_list=}",
+                f"{self._horizontal_vane_list=}",
+            )
         return
 
     def connection_lost(self, exc):
@@ -172,18 +202,27 @@ class IntesisBox(asyncio.Protocol):
                     ensure_future(coro, loop=self._eventLoop)
                 else:
                     _LOGGER.debug("Missing IP address or port.")
+                    self._connectionStatus = API_DISCONNECTED
 
             except Exception as e:
                 _LOGGER.error('%s Exception. %s / %s', type(e), repr(e.args), e)
                 self._connectionStatus = API_DISCONNECTED
+        else:
+            _LOGGER.debug('connect() called but already connecting')
 
     def stop(self):
         """Public method for shutting down connectivity with the envisalink."""
         self._connectionStatus = API_DISCONNECTED
         self._transport.close()
 
-    def poll_status(self, sendcallback=False):
-        self._transport.write("GET,1:*\r".encode('ascii'))
+    async def poll_status(self, sendcallback=False):
+        """Periodically poll for updates since the controllers don't always update reliably"""
+        while self.is_connected:
+            _LOGGER.debug("Polling for update")
+            self._write("GET,1:*")
+            await asyncio.sleep(60*5) # 5 minutes
+        else:
+            _LOGGER.debug("Not connected, skipping poll_status()")
 
     def set_temperature(self, setpoint):
         """Public method for setting the temperature"""
@@ -204,10 +243,8 @@ class IntesisBox(asyncio.Protocol):
 
     def _set_value(self, uid, value):
         """Internal method to send a command to the API"""
-        message = "SET,{}:{},{}\r".format(1, uid, value)
         try:
-            self._transport.write(message.encode('ascii'))
-            _LOGGER.debug("Data sent: {!r}".format(message))
+            self._write(f"SET,1:{uid},{value}")
         except Exception as e:
             _LOGGER.error('%s Exception. %s / %s', type(e), e.args, e)
 
@@ -292,9 +329,6 @@ class IntesisBox(asyncio.Protocol):
         temperature = self._device.get(FUNCTION_AMBTEMP)
         if temperature:
             temperature = int(temperature) / 10
-        # When unsupported, -32768 is reported
-        if temperature == -3276.8:
-            temperature = None
         return temperature
 
     @property
