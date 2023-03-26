@@ -98,7 +98,7 @@ class IntesisBoxAC(ClimateEntity):
 
     def __init__(self, controller, name = None, unique_id = None):
         """Initialize the thermostat."""
-        _LOGGER.debug('Added climate device with state')
+        _LOGGER.debug("Setting up climate device.")
         self._controller = controller
 
         self._deviceid = controller.device_mac_address
@@ -122,7 +122,7 @@ class IntesisBoxAC(ClimateEntity):
         # Setup fan list
         self._fan_list = [x.title() for x in self._controller.fan_speed_list]
         if len(self._fan_list) < 1:
-          raise PlatformNotReady
+          raise PlatformNotReady("Controller hasn't finished initializing device")
         self._fan_speed = None
 
         # Setup operation list
@@ -148,6 +148,7 @@ class IntesisBoxAC(ClimateEntity):
             if len(self._swing_list) > 2:
                 self._swing_list.append(SWING_LIST_BOTH)
 
+        _LOGGER.debug("Finished setting up climate entity!")
         self._controller.add_update_callback(self.update_callback)
 
     @property
@@ -192,7 +193,7 @@ class IntesisBoxAC(ClimateEntity):
 
     def set_temperature(self, **kwargs):
         """Set new target temperature."""
-        _LOGGER.debug("Intesisbox Set Temperature=%s")
+        _LOGGER.debug(f"set_temperature({kwargs!r})")
 
         temperature = kwargs.get(ATTR_TEMPERATURE)
         operation_mode = kwargs.get(ATTR_HVAC_MODE)
@@ -205,7 +206,7 @@ class IntesisBoxAC(ClimateEntity):
 
     def set_hvac_mode(self, operation_mode):
         """Set operation mode."""
-        _LOGGER.debug("Intesisbox Set Mode=%s", operation_mode)
+        _LOGGER.debug(f"set_hvac_mode({operation_mode=})")
         if operation_mode == HVAC_MODE_OFF:
             self._controller.set_power_off()
             self._power = False
@@ -229,6 +230,7 @@ class IntesisBoxAC(ClimateEntity):
 
     def set_fan_mode(self, fan_mode):
         """Set fan mode (from quiet, low, medium, high, auto)."""
+         _LOGGER.debug(f"set_fan_mode({fan_mode=})")
         self._controller.set_fan_speed(fan_mode.upper())
 
     def set_swing_mode(self, swing_mode):
