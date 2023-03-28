@@ -70,6 +70,14 @@ MAP_STATE_ICONS = {
     HVAC_MODE_FAN_ONLY: 'mdi:fan',
 }
 
+FAN_MODE_I_TO_E = {
+    'AUTO': 'auto',
+    '1': 'low',
+    '2': 'medium',
+    '3': 'high',
+}
+FAN_MODE_E_TO_I = {v: k for k, v in FAN_MODE_I_TO_E.items()}
+
 SWING_ON = 'SWING'
 SWING_STOP = 'AUTO'
 SWING_LIST_HORIZONTAL = 'Horizontal'
@@ -98,7 +106,7 @@ class IntesisBoxAC(ClimateEntity):
 
     def __init__(self, controller, name = None, unique_id = None):
         """Initialize the thermostat."""
-        _LOGGER.debug('Added climate device with state')
+        _LOGGER.debug("Setting up climate device.")
         self._controller = controller
 
         self._deviceid = controller.device_mac_address
@@ -122,7 +130,7 @@ class IntesisBoxAC(ClimateEntity):
         # Setup fan list
         self._fan_list = [x.title() for x in self._controller.fan_speed_list]
         if len(self._fan_list) < 1:
-          raise PlatformNotReady
+          raise PlatformNotReady("Controller hasn't finished initializing device")
         self._fan_speed = None
 
         # Setup operation list
@@ -148,6 +156,7 @@ class IntesisBoxAC(ClimateEntity):
             if len(self._swing_list) > 2:
                 self._swing_list.append(SWING_LIST_BOTH)
 
+        _LOGGER.debug("Finished setting up climate entity!")
         self._controller.add_update_callback(self.update_callback)
 
     @property
@@ -192,7 +201,7 @@ class IntesisBoxAC(ClimateEntity):
 
     def set_temperature(self, **kwargs):
         """Set new target temperature."""
-        _LOGGER.debug("Intesisbox Set Temperature=%s")
+        _LOGGER.debug(f"set_temperature({kwargs!r})")
 
         temperature = kwargs.get(ATTR_TEMPERATURE)
         operation_mode = kwargs.get(ATTR_HVAC_MODE)
@@ -205,7 +214,7 @@ class IntesisBoxAC(ClimateEntity):
 
     def set_hvac_mode(self, operation_mode):
         """Set operation mode."""
-        _LOGGER.debug("Intesisbox Set Mode=%s", operation_mode)
+        _LOGGER.debug(f"set_hvac_mode({operation_mode=})")
         if operation_mode == HVAC_MODE_OFF:
             self._controller.set_power_off()
             self._power = False
@@ -229,7 +238,9 @@ class IntesisBoxAC(ClimateEntity):
 
     def set_fan_mode(self, fan_mode):
         """Set fan mode (from quiet, low, medium, high, auto)."""
-        self._controller.set_fan_speed(fan_mode.upper())
+        target = FAN_MODE_E_TO_I.get(fan_mode, fan_mode)
+        _LOGGER.debug(f"set_fan_mode({fan_mode=}) -> set_fan_speed(target={target.upper()})")
+        self._controller.set_fan_speed(target.upper())
 
     def set_swing_mode(self, swing_mode):
         """Set the vertical vane."""
@@ -330,7 +341,7 @@ class IntesisBoxAC(ClimateEntity):
     @property
     def fan_mode(self):
         """Return whether the fan is on."""
-        return self._fan_speed
+        return FAN_MODE_I_TO_E.get(self._fan_speed, self._fan_speed).lower()
 
     @property
     def swing_mode(self):
@@ -347,7 +358,11 @@ class IntesisBoxAC(ClimateEntity):
     @property
     def fan_modes(self):
         """List of available fan modes."""
-        return self._fan_list
+        return [
+            FAN_MODE_I_TO_E.get(mode.upper(), mode)
+            for mode
+            in self._fan_list
+        ]
 
     @property
     def swing_modes(self):
