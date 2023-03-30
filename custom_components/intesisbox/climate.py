@@ -1,51 +1,55 @@
-"""
-Support for IntesisBox Smart AC Controllers.
+"""Support for IntesisBox Smart AC Controllers.
 
 For more details about this platform, please refer to the documentation at
 https://github.com/jnimmo/hass-intesisbox
 """
 import asyncio
-import logging
 from datetime import timedelta
+import logging
+
 import voluptuous as vol
 
-import homeassistant.helpers.config_validation as cv
-
-from homeassistant.components import persistent_notification
 from homeassistant.components.climate import PLATFORM_SCHEMA, ClimateEntity
 from homeassistant.components.climate.const import (
     ATTR_HVAC_MODE,
-    HVAC_MODE_HEAT_COOL,
     HVAC_MODE_COOL,
     HVAC_MODE_DRY,
     HVAC_MODE_FAN_ONLY,
     HVAC_MODE_HEAT,
+    HVAC_MODE_HEAT_COOL,
     HVAC_MODE_OFF,
     SUPPORT_FAN_MODE,
     SUPPORT_SWING_MODE,
-    SUPPORT_TARGET_TEMPERATURE
-    )
+    SUPPORT_TARGET_TEMPERATURE,
+)
 from homeassistant.const import (
     ATTR_TEMPERATURE,
     CONF_HOST,
     CONF_NAME,
     CONF_UNIQUE_ID,
     STATE_UNKNOWN,
-    TEMP_CELSIUS
-    )
+    TEMP_CELSIUS,
+)
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import PlatformNotReady
+import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigEntry, ConfigType, DiscoveryInfoType
 
-from . import DOMAIN, PLATFORMS
+from . import DOMAIN
+from .intesisbox import IntesisBox
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_NAME = 'Intesisbox'
+DEFAULT_NAME = "Intesisbox"
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_HOST): cv.string,
-    vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-    vol.Optional(CONF_UNIQUE_ID): cv.string,
-})
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+    {
+        vol.Required(CONF_HOST): cv.string,
+        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+        vol.Optional(CONF_UNIQUE_ID): cv.string,
+    }
+)
 
 # Return cached results if last scan time was less than this value.
 # If a persistent connection is established for the controller, changes to
@@ -53,58 +57,70 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 SCAN_INTERVAL = timedelta(seconds=300)
 
 MAP_OPERATION_MODE_TO_HA = {
-    'AUTO': HVAC_MODE_HEAT_COOL,
-    'FAN': HVAC_MODE_FAN_ONLY,
-    'HEAT': HVAC_MODE_HEAT,
-    'DRY': HVAC_MODE_DRY,
-    'COOL': HVAC_MODE_COOL,
-    'OFF': HVAC_MODE_OFF
+    "AUTO": HVAC_MODE_HEAT_COOL,
+    "FAN": HVAC_MODE_FAN_ONLY,
+    "HEAT": HVAC_MODE_HEAT,
+    "DRY": HVAC_MODE_DRY,
+    "COOL": HVAC_MODE_COOL,
+    "OFF": HVAC_MODE_OFF,
 }
 MAP_OPERATION_MODE_TO_IB = dict(map(reversed, MAP_OPERATION_MODE_TO_HA.items()))
 
 MAP_STATE_ICONS = {
-    HVAC_MODE_HEAT: 'mdi:white-balance-sunny',
-    HVAC_MODE_HEAT_COOL: 'mdi:cached',
-    HVAC_MODE_COOL: 'mdi:snowflake',
-    HVAC_MODE_DRY: 'mdi:water-off',
-    HVAC_MODE_FAN_ONLY: 'mdi:fan',
+    HVAC_MODE_HEAT: "mdi:white-balance-sunny",
+    HVAC_MODE_HEAT_COOL: "mdi:cached",
+    HVAC_MODE_COOL: "mdi:snowflake",
+    HVAC_MODE_DRY: "mdi:water-off",
+    HVAC_MODE_FAN_ONLY: "mdi:fan",
 }
 
 FAN_MODE_I_TO_E = {
-    'AUTO': 'auto',
-    '1': 'low',
-    '2': 'medium',
-    '3': 'high',
+    "AUTO": "auto",
+    "1": "low",
+    "2": "medium",
+    "3": "high",
 }
 FAN_MODE_E_TO_I = {v: k for k, v in FAN_MODE_I_TO_E.items()}
 
-SWING_ON = 'SWING'
-SWING_STOP = 'AUTO'
-SWING_LIST_HORIZONTAL = 'Horizontal'
-SWING_LIST_VERTICAL = 'Vertical'
-SWING_LIST_BOTH = 'Both'
-SWING_LIST_STOP = 'Auto'
+SWING_ON = "SWING"
+SWING_STOP = "AUTO"
+SWING_LIST_HORIZONTAL = "Horizontal"
+SWING_LIST_VERTICAL = "Vertical"
+SWING_LIST_BOTH = "Both"
+SWING_LIST_STOP = "Auto"
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
+
+async def async_setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    async_add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Create the Intesisbox climate devices."""
-    from . import intesisbox
-    controller = intesisbox.IntesisBox(config[CONF_HOST], loop=hass.loop)
+    controller = IntesisBox(config[CONF_HOST], loop=hass.loop)
     controller.connect()
     while not controller.is_connected:
         await asyncio.sleep(0.1)
 
     name = config.get(CONF_NAME)
     unique_id = config.get(CONF_UNIQUE_ID)
-    async_add_entities([IntesisBoxAC(controller, name, unique_id)],True)
+    async_add_entities([IntesisBoxAC(controller, name, unique_id)], True)
 
-async def async_setup_entry(hass, entry, async_add_entities):
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up IntesisBox device based on a config entry."""
     controller = hass.data[DOMAIN][entry.entry_id]
     async_add_entities([IntesisBoxAC(controller)], True)
+
 
 class IntesisBoxAC(ClimateEntity):
     """Represents an Intesisbox air conditioning device."""
 
-    def __init__(self, controller, name = None, unique_id = None):
+    def __init__(self, controller: IntesisBox, name: str = None, unique_id: str = None):
         """Initialize the thermostat."""
         _LOGGER.debug("Setting up climate device.")
         self._controller = controller
@@ -130,7 +146,7 @@ class IntesisBoxAC(ClimateEntity):
         # Setup fan list
         self._fan_list = [x.title() for x in self._controller.fan_speed_list]
         if len(self._fan_list) < 1:
-          raise PlatformNotReady("Controller hasn't finished initializing device")
+            raise PlatformNotReady("Controller hasn't finished initializing device")
         self._fan_speed = None
 
         # Setup operation list
@@ -138,10 +154,10 @@ class IntesisBoxAC(ClimateEntity):
         for operation in self._controller.operation_list:
             self._operation_list.append(MAP_OPERATION_MODE_TO_HA[operation])
         if len(self._operation_list) == 1:
-           raise PlatformNotReady
+            raise PlatformNotReady
 
         # Setup feature support
-        self._base_features = (SUPPORT_TARGET_TEMPERATURE)
+        self._base_features = SUPPORT_TARGET_TEMPERATURE
         if len(self._fan_list) > 0:
             self._base_features |= SUPPORT_FAN_MODE
 
@@ -176,8 +192,9 @@ class IntesisBoxAC(ClimateEntity):
 
     @property
     def device_info(self):
+        """Info about the IntesisBox itself."""
         return {
-            "identifiers": { (DOMAIN, self.unique_id) },
+            "identifiers": {(DOMAIN, self.unique_id)},
             "name": self.name,
             "manufacturer": "Intesis",
             "model": self._controller.device_model,
@@ -189,13 +206,13 @@ class IntesisBoxAC(ClimateEntity):
         """Return the device specific state attributes."""
         attrs = {}
         if self._has_swing_control:
-            attrs['vertical_swing'] = self._vswing
-            attrs['horizontal_swing'] = self._hswing
+            attrs["vertical_swing"] = self._vswing
+            attrs["horizontal_swing"] = self._hswing
 
         if self._controller.is_connected:
-            attrs['ha_update_type'] = 'push'
+            attrs["ha_update_type"] = "push"
         else:
-            attrs['ha_update_type'] = 'poll'
+            attrs["ha_update_type"] = "poll"
 
         return attrs
 
@@ -239,7 +256,9 @@ class IntesisBoxAC(ClimateEntity):
     def set_fan_mode(self, fan_mode):
         """Set fan mode (from quiet, low, medium, high, auto)."""
         target = FAN_MODE_E_TO_I.get(fan_mode, fan_mode)
-        _LOGGER.debug(f"set_fan_mode({fan_mode=}) -> set_fan_speed(target={target.upper()})")
+        _LOGGER.debug(
+            f"set_fan_mode({fan_mode=}) -> set_fan_speed(target={target.upper()})"
+        )
         self._controller.set_fan_speed(target.upper())
 
     def set_swing_mode(self, swing_mode):
@@ -260,7 +279,9 @@ class IntesisBoxAC(ClimateEntity):
     async def async_update(self):
         """Copy values from controller dictionary to climate device."""
         if not self._controller.is_connected:
-            await asyncio.sleep(60) # per device specs, wait min 1 sec before re-connecting
+            await asyncio.sleep(
+                60
+            )  # per device specs, wait min 1 sec before re-connecting
             await self.hass.async_add_executor_job(self._controller.connect)
             self._connection_retries += 1
         else:
@@ -282,8 +303,8 @@ class IntesisBoxAC(ClimateEntity):
         # Swing mode
         # Climate module only supports one swing setting.
         if self._has_swing_control:
-            self._vswing = self._controller.vertical_swing() == SWING_ON
-            self._hswing = self._controller.horizontal_swing() == SWING_ON
+            self._vswing = self._controller.vertical_swing == SWING_ON
+            self._hswing = self._controller.horizontal_swing == SWING_ON
 
         # Track connection lost/restored.
         if self._connected != self._controller.is_connected:
@@ -358,11 +379,7 @@ class IntesisBoxAC(ClimateEntity):
     @property
     def fan_modes(self):
         """List of available fan modes."""
-        return [
-            FAN_MODE_I_TO_E.get(mode.upper(), mode)
-            for mode
-            in self._fan_list
-        ]
+        return [FAN_MODE_I_TO_E.get(mode.upper(), mode) for mode in self._fan_list]
 
     @property
     def swing_modes(self):
