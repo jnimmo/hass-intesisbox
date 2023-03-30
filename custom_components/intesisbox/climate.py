@@ -64,7 +64,7 @@ MAP_OPERATION_MODE_TO_HA = {
     "COOL": HVAC_MODE_COOL,
     "OFF": HVAC_MODE_OFF,
 }
-MAP_OPERATION_MODE_TO_IB = dict(map(reversed, MAP_OPERATION_MODE_TO_HA.items()))
+MAP_OPERATION_MODE_TO_IB = {v: k for k, v in MAP_OPERATION_MODE_TO_HA.items()}
 
 MAP_STATE_ICONS = {
     HVAC_MODE_HEAT: "mdi:white-balance-sunny",
@@ -120,7 +120,12 @@ async def async_setup_entry(
 class IntesisBoxAC(ClimateEntity):
     """Represents an Intesisbox air conditioning device."""
 
-    def __init__(self, controller: IntesisBox, name: str = None, unique_id: str = None):
+    def __init__(
+        self,
+        controller: IntesisBox,
+        name: str | None = None,
+        unique_id: str | None = None,
+    ):
         """Initialize the thermostat."""
         _LOGGER.debug("Setting up climate device.")
         self._controller = controller

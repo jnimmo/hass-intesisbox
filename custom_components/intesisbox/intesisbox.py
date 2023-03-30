@@ -2,8 +2,8 @@
 
 import asyncio
 from asyncio import BaseTransport, ensure_future
+from collections.abc import Callable
 import logging
-import queue
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,26 +43,25 @@ class IntesisBox(asyncio.Protocol):
         self._ip = ip
         self._port = port
         self._mac = None
-        self._device = {}
+        self._device: dict[str, str] = {}
         self._connectionStatus = API_DISCONNECTED
-        self._commandQueue = queue.Queue()
-        self._transport = None
-        self._updateCallbacks = []
-        self._errorCallbacks = []
-        self._errorMessage = None
+        self._transport: BaseTransport | None = None
+        self._updateCallbacks: list[Callable[[], None]] = []
+        self._errorCallbacks: list[Callable[[str], None]] = []
+        self._errorMessage: str | None = None
         self._controllerType = None
-        self._model: str = None
-        self._firmversion: str = None
-        self._rssi: int = None
+        self._model: str | None = None
+        self._firmversion: str | None = None
+        self._rssi: int | None = None
         self._eventLoop = loop
 
         # Limits
-        self._operation_list = []
-        self._fan_speed_list = []
-        self._vertical_vane_list = []
-        self._horizontal_vane_list = []
-        self._setpoint_minimum = None
-        self._setpoint_maximum = None
+        self._operation_list: list[str] = []
+        self._fan_speed_list: list[str] = []
+        self._vertical_vane_list: list[str] = []
+        self._horizontal_vane_list: list[str] = []
+        self._setpoint_minimum: int | None = None
+        self._setpoint_maximum: int | None = None
 
     def connection_made(self, transport: BaseTransport):
         """Asyncio callback for a successful connection."""
@@ -285,32 +284,32 @@ class IntesisBox(asyncio.Protocol):
         return self._vertical_vane_list
 
     @property
-    def mode(self) -> str:
+    def mode(self) -> str | None:
         """Current mode."""
         return self._device.get(FUNCTION_MODE)
 
     @property
-    def fan_speed(self) -> str:
+    def fan_speed(self) -> str | None:
         """Current fan speed."""
         return self._device.get(FUNCTION_FANSP)
 
     @property
-    def fan_speed_list(self) -> str:
+    def fan_speed_list(self) -> list[str]:
         """Supported fan speeds."""
         return self._fan_speed_list
 
     @property
-    def device_mac_address(self) -> str:
+    def device_mac_address(self) -> str | None:
         """MAC address of the IntesisBox."""
         return self._mac
 
     @property
-    def device_model(self) -> str:
+    def device_model(self) -> str | None:
         """Model of the IntesisBox."""
         return self._model
 
     @property
-    def firmware_version(self) -> str:
+    def firmware_version(self) -> str | None:
         """Firmware versioon of the IntesisBox."""
         return self._firmversion
 
@@ -325,55 +324,51 @@ class IntesisBox(asyncio.Protocol):
         return len(self._horizontal_vane_list) > 1 or len(self._vertical_vane_list) > 1
 
     @property
-    def setpoint(self) -> float:
+    def setpoint(self) -> float | None:
         """Public method returns the target temperature."""
         setpoint = self._device.get(FUNCTION_SETPOINT)
-        if setpoint:
-            setpoint = int(setpoint) / 10
-        return setpoint
+        return (int(setpoint) / 10) if setpoint else None
 
     @property
-    def ambient_temperature(self) -> float:
+    def ambient_temperature(self) -> float | None:
         """Public method returns the current temperature."""
         temperature = self._device.get(FUNCTION_AMBTEMP)
-        if temperature:
-            temperature = int(temperature) / 10
-        return temperature
+        return (int(temperature) / 10) if temperature else None
 
     @property
-    def max_setpoint(self) -> float:
+    def max_setpoint(self) -> float | None:
         """Maximum allowed target temperature."""
         return self._setpoint_maximum
 
     @property
-    def min_setpoint(self) -> float:
+    def min_setpoint(self) -> float | None:
         """Minimum allowed target temperature."""
         return self._setpoint_minimum
 
     @property
-    def rssi(self) -> str:
+    def rssi(self) -> int | None:
         """Wireless signal strength of the IntesisBox."""
         return self._rssi
 
     @property
-    def vertical_swing(self) -> str:
+    def vertical_swing(self) -> str | None:
         """Current vertical vane setting."""
         return self._device.get(FUNCTION_VANEUD)
 
     @property
-    def horizontal_swing(self) -> str:
+    def horizontal_swing(self) -> str | None:
         """Current horizontal vane setting."""
         return self._device.get(FUNCTION_VANELR)
 
     def _send_update_callback(self):
         """Notify all listeners that state of the thermostat has changed."""
-        if self._updateCallbacks == []:
+        if not self._updateCallbacks:
             _LOGGER.debug("Update callback has not been set by client.")
 
         for callback in self._updateCallbacks:
             callback()
 
-    def _send_error_callback(self, message):
+    def _send_error_callback(self, message: str):
         """Notify all listeners that an error has occurred."""
         self._errorMessage = message
 
@@ -389,7 +384,7 @@ class IntesisBox(asyncio.Protocol):
         return self._connectionStatus == API_AUTHENTICATED
 
     @property
-    def error_message(self) -> str:
+    def error_message(self) -> str | None:
         """Returns the last error message, or None if there were no errors."""
         return self._errorMessage
 
