@@ -11,7 +11,7 @@ from . import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 
-class IntesisboxFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
+class IntesisboxFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # type:ignore
     """Handle a config flow."""
 
     VERSION = 1
