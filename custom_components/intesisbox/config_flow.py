@@ -10,7 +10,8 @@ from . import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-class IntesisboxFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
+
+class IntesisboxFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # type:ignore
     """Handle a config flow."""
 
     VERSION = 1
@@ -45,8 +46,8 @@ class IntesisboxFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         self._host = user_input[CONF_HOST]
 
         # Check if already configured
-        #await self.async_set_unique_id(self._host)
-        #self._abort_if_unique_id_configured()
+        # await self.async_set_unique_id(self._host)
+        # self._abort_if_unique_id_configured()
 
         return self.async_create_entry(
             title=self._host,
