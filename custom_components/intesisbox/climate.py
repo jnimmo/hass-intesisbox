@@ -20,7 +20,7 @@ from homeassistant.const import (
     CONF_NAME,
     CONF_UNIQUE_ID,
     STATE_UNKNOWN,
-    TEMP_CELSIUS,
+    UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import PlatformNotReady
@@ -173,7 +173,7 @@ class IntesisBoxAC(ClimateEntity):
     @property
     def temperature_unit(self):
         """Intesisbox API uses celsius on the backend."""
-        return TEMP_CELSIUS
+        return UnitOfTemperature.CELSIUS
 
     @property
     def device_info(self):
