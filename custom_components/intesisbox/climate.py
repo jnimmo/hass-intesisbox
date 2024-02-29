@@ -1,4 +1,5 @@
-"""Support for IntesisBox Smart AC Controllers.
+"""
+Support for IntesisBox Smart AC Controllers.
 
 For more details about this platform, please refer to the documentation at
 https://github.com/jnimmo/hass-intesisbox
@@ -9,18 +10,9 @@ import logging
 
 import voluptuous as vol
 
-from homeassistant.components.climate import PLATFORM_SCHEMA, ClimateEntity
+from homeassistant.components.climate import PLATFORM_SCHEMA, ClimateEntity, HVACMode, ClimateEntityFeature
 from homeassistant.components.climate.const import (
     ATTR_HVAC_MODE,
-    HVAC_MODE_COOL,
-    HVAC_MODE_DRY,
-    HVAC_MODE_FAN_ONLY,
-    HVAC_MODE_HEAT,
-    HVAC_MODE_HEAT_COOL,
-    HVAC_MODE_OFF,
-    SUPPORT_FAN_MODE,
-    SUPPORT_SWING_MODE,
-    SUPPORT_TARGET_TEMPERATURE,
 )
 from homeassistant.const import (
     ATTR_TEMPERATURE,
@@ -33,8 +25,6 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import PlatformNotReady
 import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigEntry, ConfigType, DiscoveryInfoType
 
 from . import DOMAIN
 from .intesisbox import IntesisBox
@@ -57,21 +47,21 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 SCAN_INTERVAL = timedelta(seconds=300)
 
 MAP_OPERATION_MODE_TO_HA = {
-    "AUTO": HVAC_MODE_HEAT_COOL,
-    "FAN": HVAC_MODE_FAN_ONLY,
-    "HEAT": HVAC_MODE_HEAT,
-    "DRY": HVAC_MODE_DRY,
-    "COOL": HVAC_MODE_COOL,
-    "OFF": HVAC_MODE_OFF,
+    'AUTO': HVACMode.HEAT_COOL,
+    'FAN': HVACMode.FAN_ONLY,
+    'HEAT': HVACMode.HEAT,
+    'DRY': HVACMode.DRY,
+    'COOL': HVACMode.COOL,
+    'OFF': HVACMode.OFF
 }
 MAP_OPERATION_MODE_TO_IB = {v: k for k, v in MAP_OPERATION_MODE_TO_HA.items()}
 
 MAP_STATE_ICONS = {
-    HVAC_MODE_HEAT: "mdi:white-balance-sunny",
-    HVAC_MODE_HEAT_COOL: "mdi:cached",
-    HVAC_MODE_COOL: "mdi:snowflake",
-    HVAC_MODE_DRY: "mdi:water-off",
-    HVAC_MODE_FAN_ONLY: "mdi:fan",
+    HVACMode.HEAT: 'mdi:white-balance-sunny',
+    HVACMode.HEAT_COOL: 'mdi:cached',
+    HVACMode.COOL: 'mdi:snowflake',
+    HVACMode.DRY: 'mdi:water-off',
+    HVACMode.FAN_ONLY: 'mdi:fan',
 }
 
 FAN_MODE_I_TO_E = {
@@ -90,29 +80,19 @@ SWING_LIST_BOTH = "Both"
 SWING_LIST_STOP = "Auto"
 
 
-async def async_setup_platform(
-    hass: HomeAssistant,
-    config: ConfigType,
-    async_add_entities: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType | None = None,
-) -> None:
+async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     """Create the Intesisbox climate devices."""
-    controller = IntesisBox(config[CONF_HOST], loop=hass.loop)
+    from . import intesisbox
+    controller = intesisbox.IntesisBox(config[CONF_HOST], loop=hass.loop)
     controller.connect()
     while not controller.is_connected:
         await asyncio.sleep(0.1)
 
     name = config.get(CONF_NAME)
     unique_id = config.get(CONF_UNIQUE_ID)
-    async_add_entities([IntesisBoxAC(controller, name, unique_id)], True)
+    async_add_entities([IntesisBoxAC(controller, name, unique_id)],True)
 
-
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up IntesisBox device based on a config entry."""
+async def async_setup_entry(hass, entry, async_add_entities):
     controller = hass.data[DOMAIN][entry.entry_id]
     async_add_entities([IntesisBoxAC(controller)], True)
 
@@ -155,20 +135,20 @@ class IntesisBoxAC(ClimateEntity):
         self._fan_speed = None
 
         # Setup operation list
-        self._operation_list = [HVAC_MODE_OFF]
+        self._operation_list = [HVACMode.OFF]
         for operation in self._controller.operation_list:
             self._operation_list.append(MAP_OPERATION_MODE_TO_HA[operation])
         if len(self._operation_list) == 1:
             raise PlatformNotReady
 
         # Setup feature support
-        self._base_features = SUPPORT_TARGET_TEMPERATURE
+        self._base_features = ClimateEntityFeature.TARGET_TEMPERATURE
         if len(self._fan_list) > 0:
-            self._base_features |= SUPPORT_FAN_MODE
+            self._base_features |= ClimateEntityFeature.FAN_MODE
 
         # Setup swing control
         if self._has_swing_control:
-            self._base_features |= SUPPORT_SWING_MODE
+            self._base_features |= ClimateEntityFeature.SWING_MODE
             self._swing_list = [SWING_LIST_STOP]
             if SWING_ON in self._controller.vane_horizontal_list:
                 self._swing_list.append(SWING_LIST_HORIZONTAL)
@@ -237,7 +217,7 @@ class IntesisBoxAC(ClimateEntity):
     def set_hvac_mode(self, operation_mode):
         """Set operation mode."""
         _LOGGER.debug(f"set_hvac_mode({operation_mode=})")
-        if operation_mode == HVAC_MODE_OFF:
+        if operation_mode == HVACMode.OFF:
             self._controller.set_power_off()
             self._power = False
         else:
@@ -256,7 +236,7 @@ class IntesisBoxAC(ClimateEntity):
 
     def turn_off(self):
         """Turn thermostat off."""
-        self.set_hvac_mode(HVAC_MODE_OFF)
+        self.set_hvac_mode(HVACMode.OFF)
 
     def set_fan_mode(self, fan_mode):
         """Set fan mode (from quiet, low, medium, high, auto)."""
@@ -411,7 +391,7 @@ class IntesisBoxAC(ClimateEntity):
         """Return the current mode of operation if unit is on."""
         if self._power:
             return self._current_operation
-        return HVAC_MODE_OFF
+        return HVACMode.OFF
 
     @property
     def target_temperature(self):
