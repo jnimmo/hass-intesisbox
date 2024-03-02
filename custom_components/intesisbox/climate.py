@@ -143,6 +143,10 @@ class IntesisBoxAC(ClimateEntity):
 
         # Setup feature support
         self._base_features = ClimateEntityFeature.TARGET_TEMPERATURE
+ 
+        self._base_features |= ClimateEntityFeature.TURN_ON
+        self._base_features |= ClimateEntityFeature.TURN_OFF
+        
         if len(self._fan_list) > 0:
             self._base_features |= ClimateEntityFeature.FAN_MODE
 
@@ -157,6 +161,7 @@ class IntesisBoxAC(ClimateEntity):
             if len(self._swing_list) > 2:
                 self._swing_list.append(SWING_LIST_BOTH)
 
+            
         _LOGGER.debug("Finished setting up climate entity!")
         self._controller.add_update_callback(self.update_callback)
 
