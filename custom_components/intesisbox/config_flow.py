@@ -1,4 +1,5 @@
 """Config flow to configure the Intesisbox integration."""
+
 import logging
 
 import voluptuous as vol

@@ -4,13 +4,19 @@ Support for IntesisBox Smart AC Controllers.
 For more details about this platform, please refer to the documentation at
 https://github.com/jnimmo/hass-intesisbox
 """
+
 import asyncio
 from datetime import timedelta
 import logging
 
 import voluptuous as vol
 
-from homeassistant.components.climate import PLATFORM_SCHEMA, ClimateEntity, HVACMode, ClimateEntityFeature
+from homeassistant.components.climate import (
+    PLATFORM_SCHEMA,
+    ClimateEntity,
+    HVACMode,
+    ClimateEntityFeature,
+)
 from homeassistant.components.climate.const import (
     ATTR_HVAC_MODE,
 )
@@ -47,21 +53,21 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 SCAN_INTERVAL = timedelta(seconds=300)
 
 MAP_OPERATION_MODE_TO_HA = {
-    'AUTO': HVACMode.HEAT_COOL,
-    'FAN': HVACMode.FAN_ONLY,
-    'HEAT': HVACMode.HEAT,
-    'DRY': HVACMode.DRY,
-    'COOL': HVACMode.COOL,
-    'OFF': HVACMode.OFF
+    "AUTO": HVACMode.HEAT_COOL,
+    "FAN": HVACMode.FAN_ONLY,
+    "HEAT": HVACMode.HEAT,
+    "DRY": HVACMode.DRY,
+    "COOL": HVACMode.COOL,
+    "OFF": HVACMode.OFF,
 }
 MAP_OPERATION_MODE_TO_IB = {v: k for k, v in MAP_OPERATION_MODE_TO_HA.items()}
 
 MAP_STATE_ICONS = {
-    HVACMode.HEAT: 'mdi:white-balance-sunny',
-    HVACMode.HEAT_COOL: 'mdi:cached',
-    HVACMode.COOL: 'mdi:snowflake',
-    HVACMode.DRY: 'mdi:water-off',
-    HVACMode.FAN_ONLY: 'mdi:fan',
+    HVACMode.HEAT: "mdi:white-balance-sunny",
+    HVACMode.HEAT_COOL: "mdi:cached",
+    HVACMode.COOL: "mdi:snowflake",
+    HVACMode.DRY: "mdi:water-off",
+    HVACMode.FAN_ONLY: "mdi:fan",
 }
 
 FAN_MODE_I_TO_E = {
@@ -83,6 +89,7 @@ SWING_LIST_STOP = "Auto"
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     """Create the Intesisbox climate devices."""
     from . import intesisbox
+
     controller = intesisbox.IntesisBox(config[CONF_HOST], loop=hass.loop)
     controller.connect()
     while not controller.is_connected:
@@ -90,7 +97,8 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
     name = config.get(CONF_NAME)
     unique_id = config.get(CONF_UNIQUE_ID)
-    async_add_entities([IntesisBoxAC(controller, name, unique_id)],True)
+    async_add_entities([IntesisBoxAC(controller, name, unique_id)], True)
+
 
 async def async_setup_entry(hass, entry, async_add_entities):
     controller = hass.data[DOMAIN][entry.entry_id]
@@ -143,10 +151,10 @@ class IntesisBoxAC(ClimateEntity):
 
         # Setup feature support
         self._base_features = ClimateEntityFeature.TARGET_TEMPERATURE
- 
+
         self._base_features |= ClimateEntityFeature.TURN_ON
         self._base_features |= ClimateEntityFeature.TURN_OFF
-        
+
         if len(self._fan_list) > 0:
             self._base_features |= ClimateEntityFeature.FAN_MODE
 
@@ -161,7 +169,6 @@ class IntesisBoxAC(ClimateEntity):
             if len(self._swing_list) > 2:
                 self._swing_list.append(SWING_LIST_BOTH)
 
-            
         _LOGGER.debug("Finished setting up climate entity!")
         self._controller.add_update_callback(self.update_callback)
 
