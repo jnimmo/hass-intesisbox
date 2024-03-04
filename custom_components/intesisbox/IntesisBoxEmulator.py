@@ -1,4 +1,5 @@
 """Emulates an IntesisBox device on TCP port 3310."""
+
 import asyncio
 
 MODE_AUTO = "AUTO"
