@@ -1,5 +1,4 @@
-"""
-Support for IntesisBox Smart AC Controllers.
+"""Support for IntesisBox Smart AC Controllers.
 
 For more details about this platform, please refer to the documentation at
 https://github.com/jnimmo/hass-intesisbox
@@ -14,12 +13,10 @@ import voluptuous as vol
 from homeassistant.components.climate import (
     PLATFORM_SCHEMA,
     ClimateEntity,
-    HVACMode,
     ClimateEntityFeature,
+    HVACMode,
 )
-from homeassistant.components.climate.const import (
-    ATTR_HVAC_MODE,
-)
+from homeassistant.components.climate.const import ATTR_HVAC_MODE
 from homeassistant.const import (
     ATTR_TEMPERATURE,
     CONF_HOST,
@@ -28,7 +25,6 @@ from homeassistant.const import (
     STATE_UNKNOWN,
     UnitOfTemperature,
 )
-from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import PlatformNotReady
 import homeassistant.helpers.config_validation as cv
 
@@ -88,9 +84,8 @@ SWING_LIST_STOP = "Auto"
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     """Create the Intesisbox climate devices."""
-    from . import intesisbox
 
-    controller = intesisbox.IntesisBox(config[CONF_HOST], loop=hass.loop)
+    controller = IntesisBox(config[CONF_HOST], loop=hass.loop)
     controller.connect()
     while not controller.is_connected:
         await asyncio.sleep(0.1)
@@ -101,6 +96,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
+    """Add entries from config."""
     controller = hass.data[DOMAIN][entry.entry_id]
     async_add_entities([IntesisBoxAC(controller)], True)
 

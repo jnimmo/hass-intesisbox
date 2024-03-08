@@ -13,4 +13,4 @@ This has only been tested with a device emulator to the specifications, please r
 To use in your installation:
 
 1. Download the intesisbox directory into your custom_components directory
-2. Add the  new "IntesisBox" integration in Home Assistant. Set as host the IntesisBox IP
+2. Add the new "IntesisBox" integration in Home Assistant. Set as host the IntesisBox IP
