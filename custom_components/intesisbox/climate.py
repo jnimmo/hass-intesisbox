@@ -118,6 +118,8 @@ class IntesisBoxAC(ClimateEntity):
         self._devicename = name or controller.device_mac_address
         self._unique_id = unique_id or controller.device_mac_address
         self._connected = controller.is_connected
+        # Disable compatibility mode until 2025.1 as per https://developers.home-assistant.io/blog/2024/01/24/climate-climateentityfeatures-expanded/
+        self._enable_turn_on_off_backwards_compatibility = False
 
         self._max_temp = controller.max_setpoint
         self._min_temp = controller.min_setpoint
