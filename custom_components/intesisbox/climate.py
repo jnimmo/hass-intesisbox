@@ -84,8 +84,9 @@ SWING_LIST_STOP = "Auto"
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     """Create the Intesisbox climate devices."""
+    from . import intesisbox
 
-    controller = IntesisBox(config[CONF_HOST], loop=hass.loop)
+    controller = intesisbox.IntesisBox(config[CONF_HOST], loop=hass.loop)
     controller.connect()
     while not controller.is_connected:
         await asyncio.sleep(0.1)
