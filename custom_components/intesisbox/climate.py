@@ -4,6 +4,8 @@ For more details about this platform, please refer to the documentation at
 https://github.com/jnimmo/hass-intesisbox
 """
 
+from __future__ import annotations
+
 import asyncio
 from datetime import timedelta
 import logging
@@ -406,8 +408,10 @@ class IntesisBoxAC(ClimateEntity):
 
     @property
     def target_temperature(self):
-        """Return the current setpoint temperature if unit is on."""
-        return self._target_temperature
+        """Return the current setpoint temperature if unit is on and not FAN or OFF Mode."""
+        if self._power and self.hvac_mode not in [HVACMode.FAN_ONLY, HVACMode.OFF]:
+            return self._target_temperature
+        return None
 
     @property
     def supported_features(self):

@@ -1,0 +1,112 @@
+Index: custom_components/intesisbox/intesisbox.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>\"\"\"Communication with an Intesisbox device.\"\"\"\n\nimport asyncio\nfrom asyncio import BaseTransport, ensure_future\nfrom collections.abc import Callable\nimport logging\n\n_LOGGER = logging.getLogger(__name__)\n\nAPI_DISCONNECTED = \"Disconnected\"\nAPI_CONNECTING = \"Connecting\"\nAPI_AUTHENTICATED = \"Connected\"\n\nPOWER_ON = \"ON\"\nPOWER_OFF = \"OFF\"\nPOWER_STATES = [POWER_ON, POWER_OFF]\n\nMODE_AUTO = \"AUTO\"\nMODE_DRY = \"DRY\"\nMODE_FAN = \"FAN\"\nMODE_COOL = \"COOL\"\nMODE_HEAT = \"HEAT\"\nMODES = [MODE_AUTO, MODE_DRY, MODE_FAN, MODE_COOL, MODE_HEAT]\n\nFUNCTION_ONOFF = \"ONOFF\"\nFUNCTION_MODE = \"MODE\"\nFUNCTION_SETPOINT = \"SETPTEMP\"\nFUNCTION_FANSP = \"FANSP\"\nFUNCTION_VANEUD = \"VANEUD\"\nFUNCTION_VANELR = \"VANELR\"\nFUNCTION_AMBTEMP = \"AMBTEMP\"\nFUNCTION_ERRSTATUS = \"ERRSTATUS\"\nFUNCTION_ERRCODE = \"ERRCODE\"\n\nNULL_VALUES = [\"-32768\", \"32768\"]\n\n\nclass IntesisBox(asyncio.Protocol):\n    \"\"\"Handles communication with an intesisbox device via WMP.\"\"\"\n\n    def __init__(self, ip: str, port: int = 3310, loop=None):\n        \"\"\"Set up base state.\"\"\"\n        self._ip = ip\n        self._port = port\n        self._mac = None\n        self._device: dict[str, str] = {}\n        self._connectionStatus = API_DISCONNECTED\n        self._transport: BaseTransport | None = None\n        self._updateCallbacks: list[Callable[[], None]] = []\n        self._errorCallbacks: list[Callable[[str], None]] = []\n        self._errorMessage: str | None = None\n        self._controllerType = None\n        self._model: str | None = None\n        self._firmversion: str | None = None\n        self._rssi: int | None = None\n        self._eventLoop = loop\n\n        # Limits\n        self._operation_list: list[str] = []\n        self._fan_speed_list: list[str] = []\n        self._vertical_vane_list: list[str] = []\n        self._horizontal_vane_list: list[str] = []\n        self._setpoint_minimum: int | None = None\n        self._setpoint_maximum: int | None = None\n\n    def connection_made(self, transport: BaseTransport):\n        \"\"\"Asyncio callback for a successful connection.\"\"\"\n        _LOGGER.debug(\"Connected to IntesisBox\")\n        self._transport = transport\n        _ = asyncio.ensure_future(self.query_initial_state())\n\n    async def keep_alive(self):\n        \"\"\"Send a keepalive command to reset it's watchdog timer.\"\"\"\n        while self.is_connected:\n            _LOGGER.debug(\"Sending keepalive\")\n            self._write(\"PING\")\n            await asyncio.sleep(45)\n        else:\n            _LOGGER.debug(\"Not connected, skipping keepalive\")\n\n    async def query_initial_state(self):\n        \"\"\"Fetch configuration from the device upon connection.\"\"\"\n        cmds = [\n            \"ID\",\n            \"LIMITS:SETPTEMP\",\n            \"LIMITS:FANSP\",\n            \"LIMITS:MODE\",\n            \"LIMITS:VANEUD\",\n            \"LIMITS:VANELR\",\n        ]\n        for cmd in cmds:\n            self._write(cmd)\n            await asyncio.sleep(1)\n\n    def _write(self, cmd):\n        self._transport.write(f\"{cmd}\\r\".encode(\"ascii\"))\n        _LOGGER.debug(f\"Data sent: {cmd!r}\")\n\n    def data_received(self, data):\n        \"\"\"Asyncio callback when data is received on the socket.\"\"\"\n        linesReceived = data.decode(\"ascii\").splitlines()\n        statusChanged = False\n\n        for line in linesReceived:\n            _LOGGER.debug(f\"Data received: {line!r}\")\n            cmdList = line.split(\":\", 1)\n            cmd = cmdList[0]\n            args = None\n            if len(cmdList) > 1:\n                args = cmdList[1]\n                if cmd == \"ID\":\n                    self._parse_id_received(args)\n                    self._connectionStatus = API_AUTHENTICATED\n                    _ = asyncio.ensure_future(self.keep_alive())\n                    _ = asyncio.ensure_future(self.poll_status())\n                elif cmd == \"CHN,1\":\n                    self._parse_change_received(args)\n                    statusChanged = True\n                elif cmd == \"LIMITS\":\n                    self._parse_limits_received(args)\n                    statusChanged = True\n\n        if statusChanged:\n            self._send_update_callback()\n\n    def _parse_id_received(self, args):\n        # ID:Model,MAC,IP,Protocol,Version,RSSI\n        info = args.split(\",\")\n        if len(info) >= 6:\n            self._model = info[0]\n            self._mac = info[1]\n            self._firmversion = info[4]\n            self._rssi = info[5]\n\n            _LOGGER.debug(\n                \"Updated info:\",\n                f\"model:{self._model}\",\n                f\"mac:{self._mac}\",\n                f\"version:{self._firmversion}\",\n                f\"rssi:{self._rssi}\",\n            )\n\n    def _parse_change_received(self, args):\n        function = args.split(\",\")[0]\n        value = args.split(\",\")[1]\n        if value in NULL_VALUES:\n            value = None\n        self._device[function] = value\n\n        _LOGGER.debug(f\"Updated state: {self._device!r}\")\n\n    def _parse_limits_received(self, args):\n        split_args = args.split(\",\", 1)\n\n        if len(split_args) == 2:\n            function = split_args[0]\n            values = split_args[1][1:-1].split(\",\")\n\n            if function == FUNCTION_SETPOINT and len(values) == 2:\n                self._setpoint_minimum = int(values[0]) / 10\n                self._setpoint_maximum = int(values[1]) / 10\n            elif function == FUNCTION_FANSP:\n                self._fan_speed_list = values\n            elif function == FUNCTION_MODE:\n                self._operation_list = values\n            elif function == FUNCTION_VANEUD:\n                self._vertical_vane_list = values\n            elif function == FUNCTION_VANELR:\n                self._horizontal_vane_list = values\n\n            _LOGGER.debug(\n                \"Updated limits: \",\n                f\"{self._setpoint_minimum=}\",\n                f\"{self._setpoint_maximum=}\",\n                f\"{self._fan_speed_list=}\",\n                f\"{self._operation_list=}\",\n                f\"{self._vertical_vane_list=}\",\n                f\"{self._horizontal_vane_list=}\",\n            )\n        return\n\n    def connection_lost(self, exc):\n        \"\"\"Asyncio callback for a lost TCP connection.\"\"\"\n        self._connectionStatus = API_DISCONNECTED\n        _LOGGER.info(\"The server closed the connection\")\n        self._send_update_callback()\n\n    def connect(self):\n        \"\"\"Public method for connecting to IntesisHome API.\"\"\"\n        if self._connectionStatus == API_DISCONNECTED:\n            self._connectionStatus = API_CONNECTING\n            try:\n                # Must poll to get the authentication token\n                if self._ip and self._port:\n                    # Create asyncio socket\n                    coro = self._eventLoop.create_connection(\n                        lambda: self, self._ip, self._port\n                    )\n                    _LOGGER.debug(\n                        \"Opening connection to IntesisBox %s:%s\", self._ip, self._port\n                    )\n                    _ = ensure_future(coro, loop=self._eventLoop)\n                else:\n                    _LOGGER.debug(\"Missing IP address or port.\")\n                    self._connectionStatus = API_DISCONNECTED\n\n            except Exception as e:\n                _LOGGER.error(\"%s Exception. %s / %s\", type(e), repr(e.args), e)\n                self._connectionStatus = API_DISCONNECTED\n        else:\n            _LOGGER.debug(\"connect() called but already connecting\")\n\n    def stop(self):\n        \"\"\"Public method for shutting down connectivity with the envisalink.\"\"\"\n        self._connectionStatus = API_DISCONNECTED\n        self._transport.close()\n\n    async def poll_status(self, sendcallback=False):\n        \"\"\"Periodically poll for updates since the controllers don't always update reliably.\"\"\"\n        while self.is_connected:\n            _LOGGER.debug(\"Polling for update\")\n            self._write(\"GET,1:*\")\n            await asyncio.sleep(60 * 5)  # 5 minutes\n        else:\n            _LOGGER.debug(\"Not connected, skipping poll_status()\")\n\n    def set_temperature(self, setpoint):\n        \"\"\"Public method for setting the temperature.\"\"\"\n        set_temp = int(setpoint * 10)\n        self._set_value(FUNCTION_SETPOINT, set_temp)\n\n    def set_fan_speed(self, fan_speed):\n        \"\"\"Public method to set the fan speed.\"\"\"\n        self._set_value(FUNCTION_FANSP, fan_speed)\n\n    def set_vertical_vane(self, vane: str):\n        \"\"\"Public method to set the vertical vane.\"\"\"\n        self._set_value(FUNCTION_VANEUD, vane)\n\n    def set_horizontal_vane(self, vane: str):\n        \"\"\"Public method to set the horizontal vane.\"\"\"\n        self._set_value(FUNCTION_VANELR, vane)\n\n    def _set_value(self, uid: str, value: str | int) -> None:\n        \"\"\"Change a setting on the thermostat.\"\"\"\n        try:\n            self._write(f\"SET,1:{uid},{value}\")\n        except Exception as e:\n            _LOGGER.error(\"%s Exception. %s / %s\", type(e), e.args, e)\n\n    def set_mode(self, mode: str) -> None:\n        \"\"\"Change the thermostat mode (heat, cool, etc).\"\"\"\n        if not self.is_on:\n            self.set_power_on()\n\n        if mode in MODES:\n            self._set_value(FUNCTION_MODE, mode)\n\n    def set_mode_dry(self):\n        \"\"\"Public method to set device to dry asynchronously.\"\"\"\n        self._set_value(FUNCTION_MODE, MODE_DRY)\n\n    def set_power_off(self):\n        \"\"\"Public method to turn off the device asynchronously.\"\"\"\n        self._set_value(FUNCTION_ONOFF, POWER_OFF)\n\n    def set_power_on(self):\n        \"\"\"Public method to turn on the device asynchronously.\"\"\"\n        self._set_value(FUNCTION_ONOFF, POWER_ON)\n\n    @property\n    def operation_list(self) -> list[str]:\n        \"\"\"Supported modes.\"\"\"\n        return self._operation_list\n\n    @property\n    def vane_horizontal_list(self) -> list[str]:\n        \"\"\"Supported Horizontal Vane settings.\"\"\"\n        return self._horizontal_vane_list\n\n    @property\n    def vane_vertical_list(self) -> list[str]:\n        \"\"\"Supported Vertical Vane settings.\"\"\"\n        return self._vertical_vane_list\n\n    @property\n    def mode(self) -> str | None:\n        \"\"\"Current mode.\"\"\"\n        return self._device.get(FUNCTION_MODE)\n\n    @property\n    def fan_speed(self) -> str | None:\n        \"\"\"Current fan speed.\"\"\"\n        return self._device.get(FUNCTION_FANSP)\n\n    @property\n    def fan_speed_list(self) -> list[str]:\n        \"\"\"Supported fan speeds.\"\"\"\n        return self._fan_speed_list\n\n    @property\n    def device_mac_address(self) -> str | None:\n        \"\"\"MAC address of the IntesisBox.\"\"\"\n        return self._mac\n\n    @property\n    def device_model(self) -> str | None:\n        \"\"\"Model of the IntesisBox.\"\"\"\n        return self._model\n\n    @property\n    def firmware_version(self) -> str | None:\n        \"\"\"Firmware versioon of the IntesisBox.\"\"\"\n        return self._firmversion\n\n    @property\n    def is_on(self) -> bool:\n        \"\"\"Return true if the controlled device is turned on.\"\"\"\n        return self._device.get(FUNCTION_ONOFF) == POWER_ON\n\n    @property\n    def has_swing_control(self) -> bool:\n        \"\"\"Return true if the device supports swing modes.\"\"\"\n        return len(self._horizontal_vane_list) > 1 or len(self._vertical_vane_list) > 1\n\n    @property\n    def setpoint(self) -> float | None:\n        \"\"\"Public method returns the target temperature.\"\"\"\n        setpoint = self._device.get(FUNCTION_SETPOINT)\n        return (int(setpoint) / 10) if setpoint else None\n\n    @property\n    def ambient_temperature(self) -> float | None:\n        \"\"\"Public method returns the current temperature.\"\"\"\n        temperature = self._device.get(FUNCTION_AMBTEMP)\n        return (int(temperature) / 10) if temperature else None\n\n    @property\n    def max_setpoint(self) -> float | None:\n        \"\"\"Maximum allowed target temperature.\"\"\"\n        return self._setpoint_maximum\n\n    @property\n    def min_setpoint(self) -> float | None:\n        \"\"\"Minimum allowed target temperature.\"\"\"\n        return self._setpoint_minimum\n\n    @property\n    def rssi(self) -> int | None:\n        \"\"\"Wireless signal strength of the IntesisBox.\"\"\"\n        return self._rssi\n\n    @property\n    def vertical_swing(self) -> str | None:\n        \"\"\"Current vertical vane setting.\"\"\"\n        return self._device.get(FUNCTION_VANEUD)\n\n    @property\n    def horizontal_swing(self) -> str | None:\n        \"\"\"Current horizontal vane setting.\"\"\"\n        return self._device.get(FUNCTION_VANELR)\n\n    def _send_update_callback(self):\n        \"\"\"Notify all listeners that state of the thermostat has changed.\"\"\"\n        if not self._updateCallbacks:\n            _LOGGER.debug(\"Update callback has not been set by client.\")\n\n        for callback in self._updateCallbacks:\n            callback()\n\n    def _send_error_callback(self, message: str):\n        \"\"\"Notify all listeners that an error has occurred.\"\"\"\n        self._errorMessage = message\n\n        if self._errorCallbacks == []:\n            _LOGGER.debug(\"Error callback has not been set by client.\")\n\n        for callback in self._errorCallbacks:\n            callback(message)\n\n    @property\n    def is_connected(self) -> bool:\n        \"\"\"Returns true if the TCP connection is established.\"\"\"\n        return self._connectionStatus == API_AUTHENTICATED\n\n    @property\n    def error_message(self) -> str | None:\n        \"\"\"Returns the last error message, or None if there were no errors.\"\"\"\n        return self._errorMessage\n\n    @property\n    def is_disconnected(self) -> bool:\n        \"\"\"Returns true when the TCP connection is disconnected and idle.\"\"\"\n        return self._connectionStatus == API_DISCONNECTED\n\n    def add_update_callback(self, method):\n        \"\"\"Public method to add a callback subscriber.\"\"\"\n        self._updateCallbacks.append(method)\n\n    def add_error_callback(self, method):\n        \"\"\"Public method to add a callback subscriber.\"\"\"\n        self._errorCallbacks.append(method)\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/custom_components/intesisbox/intesisbox.py b/custom_components/intesisbox/intesisbox.py
+--- a/custom_components/intesisbox/intesisbox.py	(revision 43d9f4f1385539ffd5725bef604fd718bfc1973d)
++++ b/custom_components/intesisbox/intesisbox.py	(date 1709987882337)
+@@ -1,5 +1,7 @@
+ """Communication with an Intesisbox device."""
+ 
++from __future__ import annotations
++
+ import asyncio
+ from asyncio import BaseTransport, ensure_future
+ from collections.abc import Callable
+@@ -78,6 +80,15 @@
+         else:
+             _LOGGER.debug("Not connected, skipping keepalive")
+ 
++    async def poll_ambtemp(self):
++        """Retrieve Ambient Temperature to prevent integration timeouts."""
++        while self.is_connected:
++            _LOGGER.debug("Sending AMBTEMP")
++            self._write("GET,1:AMBTEMP")
++            await asyncio.sleep(10)
++        else:
++            _LOGGER.debug("Not connected, skipping Ambient Temp Request")
++
+     async def query_initial_state(self):
+         """Fetch configuration from the device upon connection."""
+         cmds = [
+@@ -92,9 +103,21 @@
+             self._write(cmd)
+             await asyncio.sleep(1)
+ 
++    async def delay(self, delay_time):
++        """Async Delay to slow down commands and await response from units."""
++        _LOGGER.debug(f"Delay Started for {delay_time} seconds...")
++        await asyncio.sleep(delay_time)
++        _LOGGER.debug("Delay Ended...")
++
+     def _write(self, cmd):
+         self._transport.write(f"{cmd}\r".encode("ascii"))
+         _LOGGER.debug(f"Data sent: {cmd!r}")
++
++    async def _writeasync(self, cmd):
++        """Async write to slow down commands and await response from units."""
++        self._transport.write(f"{cmd}\r".encode("ascii"))
++        _LOGGER.debug(f"Data sent: {cmd!r}")
++        await asyncio.sleep(1)
+ 
+     def data_received(self, data):
+         """Asyncio callback when data is received on the socket."""
+@@ -111,8 +134,9 @@
+                 if cmd == "ID":
+                     self._parse_id_received(args)
+                     self._connectionStatus = API_AUTHENTICATED
+-                    _ = asyncio.ensure_future(self.keep_alive())
++                    # _ = asyncio.ensure_future(self.keep_alive())
+                     _ = asyncio.ensure_future(self.poll_status())
++                    _ = asyncio.ensure_future(self.poll_ambtemp())
+                 elif cmd == "CHN,1":
+                     self._parse_change_received(args)
+                     statusChanged = True
+@@ -244,17 +268,37 @@
+     def _set_value(self, uid: str, value: str | int) -> None:
+         """Change a setting on the thermostat."""
+         try:
+-            self._write(f"SET,1:{uid},{value}")
++            # self._write(f"SET,1:{uid},{value}")
++            asyncio.run(self._writeasync(f"SET,1:{uid},{value}"))
+         except Exception as e:
+             _LOGGER.error("%s Exception. %s / %s", type(e), e.args, e)
+ 
+-    def set_mode(self, mode: str) -> None:
+-        """Change the thermostat mode (heat, cool, etc)."""
++    def set_mode(self, mode):
++        """Send mode and confirm change before turning on."""
++        """ Some units return responses out of order"""
++        _LOGGER.debug(f"Setting MODE to {mode}.")
++        if mode in MODES:
++            self._set_value(FUNCTION_MODE, mode)
+         if not self.is_on:
+-            self.set_power_on()
+-
+-        if mode in MODES:
+-            self._set_value(FUNCTION_MODE, mode)
++            """ "Check to ensure in correct mode before turning on"""
++            retry = 30
++            while self.mode != mode and retry > 0:
++                _LOGGER.debug(
++                    f"Waiting for MODE to return {mode}, currently {str(self.mode)}"
++                )
++                _LOGGER.debug(f"Retry attempt = {retry}")
++                # asyncio.run(self.delay(1)) # SHANE
++                # self._write("GET,1:MODE")
++                asyncio.run(self._writeasync("GET,1:MODE"))
++                retry -= 1
++            else:
++                if retry != 0:
++                    _LOGGER.debug(
++                        f"MODE confirmed now {str(self.mode)}, proceed to Power On"
++                    )
++                    self.set_power_on()
++                else:
++                    _LOGGER.error("Cannot set Intesisbox mode giving up...")
+ 
+     def set_mode_dry(self):
+         """Public method to set device to dry asynchronously."""
