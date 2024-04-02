@@ -105,3 +105,6 @@ venv.bak/
 
 #.idea
 /.idea
+
+# Ignore Mac DS_Store files
+.DS_Store
