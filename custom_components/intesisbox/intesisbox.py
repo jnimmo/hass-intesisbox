@@ -103,12 +103,6 @@ class IntesisBox(asyncio.Protocol):
             self._write(cmd)
             await asyncio.sleep(1)
 
-    async def delay(self, delay_time):
-        """Async Delay to slow down commands and await response from units."""
-        _LOGGER.debug(f"Delay Started for {delay_time} seconds...")
-        await asyncio.sleep(delay_time)
-        _LOGGER.debug("Delay Ended...")
-
     def _write(self, cmd):
         self._transport.write(f"{cmd}\r".encode("ascii"))
         _LOGGER.debug(f"Data sent: {cmd!r}")
@@ -134,7 +128,6 @@ class IntesisBox(asyncio.Protocol):
                 if cmd == "ID":
                     self._parse_id_received(args)
                     self._connectionStatus = API_AUTHENTICATED
-                    # _ = asyncio.ensure_future(self.keep_alive())
                     _ = asyncio.ensure_future(self.poll_status())
                     _ = asyncio.ensure_future(self.poll_ambtemp())
                 elif cmd == "CHN,1":
@@ -268,27 +261,24 @@ class IntesisBox(asyncio.Protocol):
     def _set_value(self, uid: str, value: str | int) -> None:
         """Change a setting on the thermostat."""
         try:
-            # self._write(f"SET,1:{uid},{value}")
             asyncio.run(self._writeasync(f"SET,1:{uid},{value}"))
         except Exception as e:
             _LOGGER.error("%s Exception. %s / %s", type(e), e.args, e)
 
     def set_mode(self, mode):
         """Send mode and confirm change before turning on."""
-        """ Some units return responses out of order"""
+        """Some units return responses out of order"""
         _LOGGER.debug(f"Setting MODE to {mode}.")
         if mode in MODES:
             self._set_value(FUNCTION_MODE, mode)
         if not self.is_on:
-            """ "Check to ensure in correct mode before turning on"""
+            """Check to ensure in correct mode before turning on"""
             retry = 30
             while self.mode != mode and retry > 0:
                 _LOGGER.debug(
                     f"Waiting for MODE to return {mode}, currently {str(self.mode)}"
                 )
                 _LOGGER.debug(f"Retry attempt = {retry}")
-                # asyncio.run(self.delay(1)) # SHANE
-                # self._write("GET,1:MODE")
                 asyncio.run(self._writeasync("GET,1:MODE"))
                 retry -= 1
             else:
