@@ -276,8 +276,8 @@ class IntesisBoxAC(ClimateEntity):
         """Copy values from controller dictionary to climate device."""
         if not self._controller.is_connected:
             await asyncio.sleep(
-                60
-            )  # per device specs, wait min 1 sec before re-connecting
+                5
+            )  # per device specs, wait minimum 1 second before re-connecting
             await self.hass.async_add_executor_job(self._controller.connect)
             self._connection_retries += 1
         else:
