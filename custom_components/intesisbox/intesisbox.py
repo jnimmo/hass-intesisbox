@@ -211,7 +211,7 @@ class IntesisBox(asyncio.Protocol):
             _LOGGER.debug("connect() called but already connecting")
             if self._transport.is_closing():
                 _LOGGER.debug(
-                        "Socket is closing while trying to connect. Force reconnection"
+                    "Socket is closing while trying to connect. Force reconnection"
                 )
                 self._connectionStatus = API_DISCONNECTED
                 self._transport.close()
