@@ -238,12 +238,12 @@ class IntesisBoxAC(ClimateEntity):
             if self._target_temperature:
                 self._controller.set_temperature(self._target_temperature)
 
-        self.hass.async_add_job(self.schedule_update_ha_state, False)
+        self.schedule_update_ha_state(False)
 
     def turn_on(self):
         """Turn thermostat on."""
         self._controller.set_power_on()
-        self.hass.async_add_job(self.schedule_update_ha_state, False)
+        self.schedule_update_ha_state(False)
 
     def turn_off(self):
         """Turn thermostat off."""
@@ -276,8 +276,8 @@ class IntesisBoxAC(ClimateEntity):
         """Copy values from controller dictionary to climate device."""
         if not self._controller.is_connected:
             await asyncio.sleep(
-                60
-            )  # per device specs, wait min 1 sec before re-connecting
+                5
+            )  # per device specs, wait minimum 1 second before re-connecting
             await self.hass.async_add_executor_job(self._controller.connect)
             self._connection_retries += 1
         else:
@@ -326,7 +326,7 @@ class IntesisBoxAC(ClimateEntity):
         """Let HA know there has been an update from the controller."""
         _LOGGER.debug("Intesisbox sent a status update.")
         if self.hass:
-            self.hass.async_add_job(self.schedule_update_ha_state, True)
+            self.schedule_update_ha_state(True)
 
     @property
     def min_temp(self):
