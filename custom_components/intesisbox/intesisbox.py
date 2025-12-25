@@ -1,5 +1,7 @@
 """Communication with an Intesisbox device."""
 
+from __future__ import annotations
+
 import asyncio
 from asyncio import BaseTransport, ensure_future
 from collections.abc import Callable
@@ -78,6 +80,15 @@ class IntesisBox(asyncio.Protocol):
         else:
             _LOGGER.debug("Not connected, skipping keepalive")
 
+    async def poll_ambtemp(self):
+        """Retrieve Ambient Temperature to prevent integration timeouts."""
+        while self.is_connected:
+            _LOGGER.debug("Sending AMBTEMP")
+            self._write("GET,1:AMBTEMP")
+            await asyncio.sleep(10)
+        else:
+            _LOGGER.debug("Not connected, skipping Ambient Temp Request")
+
     async def query_initial_state(self):
         """Fetch configuration from the device upon connection."""
         cmds = [
@@ -96,6 +107,12 @@ class IntesisBox(asyncio.Protocol):
         self._transport.write(f"{cmd}\r".encode("ascii"))
         _LOGGER.debug(f"Data sent: {cmd!r}")
 
+    async def _writeasync(self, cmd):
+        """Async write to slow down commands and await response from units."""
+        self._transport.write(f"{cmd}\r".encode("ascii"))
+        _LOGGER.debug(f"Data sent: {cmd!r}")
+        await asyncio.sleep(1)
+
     def data_received(self, data):
         """Asyncio callback when data is received on the socket."""
         linesReceived = data.decode("ascii").splitlines()
@@ -111,8 +128,8 @@ class IntesisBox(asyncio.Protocol):
                 if cmd == "ID":
                     self._parse_id_received(args)
                     self._connectionStatus = API_AUTHENTICATED
-                    _ = asyncio.ensure_future(self.keep_alive())
                     _ = asyncio.ensure_future(self.poll_status())
+                    _ = asyncio.ensure_future(self.poll_ambtemp())
                 elif cmd == "CHN,1":
                     self._parse_change_received(args)
                     statusChanged = True
@@ -251,17 +268,34 @@ class IntesisBox(asyncio.Protocol):
     def _set_value(self, uid: str, value: str | int) -> None:
         """Change a setting on the thermostat."""
         try:
-            self._write(f"SET,1:{uid},{value}")
+            asyncio.run(self._writeasync(f"SET,1:{uid},{value}"))
         except Exception as e:
             _LOGGER.error("%s Exception. %s / %s", type(e), e.args, e)
 
-    def set_mode(self, mode: str) -> None:
-        """Change the thermostat mode (heat, cool, etc)."""
-        if not self.is_on:
-            self.set_power_on()
-
+    def set_mode(self, mode):
+        """Send mode and confirm change before turning on."""
+        """Some units return responses out of order"""
+        _LOGGER.debug(f"Setting MODE to {mode}.")
         if mode in MODES:
             self._set_value(FUNCTION_MODE, mode)
+        if not self.is_on:
+            """Check to ensure in correct mode before turning on"""
+            retry = 30
+            while self.mode != mode and retry > 0:
+                _LOGGER.debug(
+                    f"Waiting for MODE to return {mode}, currently {str(self.mode)}"
+                )
+                _LOGGER.debug(f"Retry attempt = {retry}")
+                asyncio.run(self._writeasync("GET,1:MODE"))
+                retry -= 1
+            else:
+                if retry != 0:
+                    _LOGGER.debug(
+                        f"MODE confirmed now {str(self.mode)}, proceed to Power On"
+                    )
+                    self.set_power_on()
+                else:
+                    _LOGGER.error("Cannot set Intesisbox mode giving up...")
 
     def set_mode_dry(self):
         """Public method to set device to dry asynchronously."""
