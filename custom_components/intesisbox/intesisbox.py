@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from asyncio import BaseTransport, ensure_future
 from collections.abc import Callable
 import logging
 
@@ -36,6 +35,16 @@ FUNCTION_ERRCODE = "ERRCODE"
 
 NULL_VALUES = ["-32768", "32768"]
 
+background_tasks = set()
+
+
+def ensure_background_task(coro):
+    """Ensure background task is running."""
+    task = asyncio.ensure_future(coro)
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+    return task
+
 
 class IntesisBox(asyncio.Protocol):
     """Handles communication with an intesisbox device via WMP."""
@@ -47,7 +56,7 @@ class IntesisBox(asyncio.Protocol):
         self._mac = None
         self._device: dict[str, str] = {}
         self._connectionStatus = API_DISCONNECTED
-        self._transport: BaseTransport | None = None
+        self._transport: asyncio.BaseTransport | None = None
         self._updateCallbacks: list[Callable[[], None]] = []
         self._errorCallbacks: list[Callable[[str], None]] = []
         self._errorMessage: str | None = None
@@ -65,11 +74,11 @@ class IntesisBox(asyncio.Protocol):
         self._setpoint_minimum: int | None = None
         self._setpoint_maximum: int | None = None
 
-    def connection_made(self, transport: BaseTransport):
+    def connection_made(self, transport: asyncio.BaseTransport):
         """Asyncio callback for a successful connection."""
         _LOGGER.debug("Connected to IntesisBox")
         self._transport = transport
-        _ = asyncio.ensure_future(self.query_initial_state())
+        ensure_background_task(self.query_initial_state())
 
     async def keep_alive(self):
         """Send a keepalive command to reset it's watchdog timer."""
@@ -128,8 +137,8 @@ class IntesisBox(asyncio.Protocol):
                 if cmd == "ID":
                     self._parse_id_received(args)
                     self._connectionStatus = API_AUTHENTICATED
-                    _ = asyncio.ensure_future(self.poll_status())
-                    _ = asyncio.ensure_future(self.poll_ambtemp())
+                    ensure_background_task(self.poll_status())
+                    ensure_background_task(self.poll_ambtemp())
                 elif cmd == "CHN,1":
                     self._parse_change_received(args)
                     statusChanged = True
@@ -216,7 +225,7 @@ class IntesisBox(asyncio.Protocol):
                     _LOGGER.debug(
                         "Opening connection to IntesisBox %s:%s", self._ip, self._port
                     )
-                    _ = ensure_future(coro, loop=self._eventLoop)
+                    ensure_background_task(coro)
                 else:
                     _LOGGER.debug("Missing IP address or port.")
                     self._connectionStatus = API_DISCONNECTED
