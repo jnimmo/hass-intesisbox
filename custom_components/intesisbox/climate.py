@@ -73,6 +73,7 @@ FAN_MODE_I_TO_E = {
     "1": "low",
     "2": "medium",
     "3": "high",
+    "4": "ultra high",
 }
 FAN_MODE_E_TO_I = {v: k for k, v in FAN_MODE_I_TO_E.items()}
 
