@@ -38,11 +38,17 @@ NULL_VALUES = ["-32768", "32768"]
 background_tasks = set()
 
 
-def ensure_background_task(coro):
+def clean_background_task(task):
+    """Handle background task completion."""
+    background_tasks.discard(task)
+    _ = task.result()  # to propagate exceptions
+
+
+def ensure_background_task(coro, loop):
     """Ensure background task is running."""
-    task = asyncio.ensure_future(coro)
+    task = asyncio.ensure_future(coro, loop=loop)
     background_tasks.add(task)
-    task.add_done_callback(background_tasks.discard)
+    task.add_done_callback(clean_background_task)
     return task
 
 
@@ -78,7 +84,7 @@ class IntesisBox(asyncio.Protocol):
         """Asyncio callback for a successful connection."""
         _LOGGER.debug("Connected to IntesisBox")
         self._transport = transport
-        ensure_background_task(self.query_initial_state())
+        ensure_background_task(self.query_initial_state(), self._eventLoop)
 
     async def keep_alive(self):
         """Send a keepalive command to reset it's watchdog timer."""
@@ -137,8 +143,8 @@ class IntesisBox(asyncio.Protocol):
                 if cmd == "ID":
                     self._parse_id_received(args)
                     self._connectionStatus = API_AUTHENTICATED
-                    ensure_background_task(self.poll_status())
-                    ensure_background_task(self.poll_ambtemp())
+                    ensure_background_task(self.poll_status(), self._eventLoop)
+                    ensure_background_task(self.poll_ambtemp(), self._eventLoop)
                 elif cmd == "CHN,1":
                     self._parse_change_received(args)
                     statusChanged = True
@@ -225,7 +231,7 @@ class IntesisBox(asyncio.Protocol):
                     _LOGGER.debug(
                         "Opening connection to IntesisBox %s:%s", self._ip, self._port
                     )
-                    ensure_background_task(coro)
+                    ensure_background_task(coro, self._eventLoop)
                 else:
                     _LOGGER.debug("Missing IP address or port.")
                     self._connectionStatus = API_DISCONNECTED
