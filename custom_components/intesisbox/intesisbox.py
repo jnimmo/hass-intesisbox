@@ -265,7 +265,7 @@ class IntesisBox(asyncio.Protocol):
 
     def set_temperature(self, setpoint):
         """Public method for setting the temperature."""
-        set_temp = int(setpoint * 10)
+        set_temp = round(setpoint * 10)
         self._set_value(FUNCTION_SETPOINT, set_temp)
 
     def set_fan_speed(self, fan_speed):
