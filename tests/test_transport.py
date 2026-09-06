@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from .emulator import Emulator, start
+from .emulator import ID_V6, Emulator, start
 
 
 @pytest.fixture(autouse=True)
@@ -217,3 +217,30 @@ def test_a_parser_exception_does_not_kill_the_socket(caplog):
     with caplog.at_level(logging.ERROR):
         box.data_received(b"CHN,1:MODE,HEAT\r\nCHN,1:ONOFF,ON\r\n")
     assert "Failed to process line" in caplog.text
+
+
+async def test_v6_id_banner_field_offsets():
+    """V6 gateways omit the Protocol field, shifting version and RSSI left."""
+    box = intesisbox.IntesisBox("127.0.0.1", 1, loop=asyncio.get_running_loop())
+    try:
+        box.data_received(f"{ID_V6}\r\n".encode())
+        assert box.device_model == "INWMPUNI001I000"
+        assert box.device_mac_address == "001DC9A2C911"
+        assert box.firmware_version == "v1.0.1"
+        assert box.rssi == "-44"
+        assert box.is_connected
+    finally:
+        # Never connected a socket, so there is nothing to stop; only the
+        # pollers the ID reply started.
+        await _reap_tasks()
+
+
+def test_short_id_reply_does_not_count_as_connected(caplog):
+    """A reply with no identity in it is logged, and the handshake goes on."""
+    box = intesisbox.IntesisBox("127.0.0.1", 1, loop=None)
+    with caplog.at_level(logging.WARNING):
+        box.data_received(b"ID:too,short\r\n")
+    assert "Unexpected ID reply" in caplog.text
+    assert box.device_mac_address is None
+    assert not box.is_connected
+    assert not intesisbox.background_tasks

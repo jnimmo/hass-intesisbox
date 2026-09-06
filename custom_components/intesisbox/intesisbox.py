@@ -70,10 +70,10 @@ class IntesisBox(asyncio.Protocol):
         self._updateCallbacks: list[Callable[[], None]] = []
         self._errorCallbacks: list[Callable[[str], None]] = []
         self._errorMessage: str | None = None
-        self._controllerType = None
+        self._controllerType: str | None = None
         self._model: str | None = None
         self._firmversion: str | None = None
-        self._rssi: int | None = None
+        self._rssi: str | None = None
         self._eventLoop = loop
 
         # Receive buffer. TCP is a byte stream, so a single data_received() may
@@ -179,7 +179,8 @@ class IntesisBox(asyncio.Protocol):
             return False
         cmd, args = cmdList
         if cmd == "ID":
-            self._parse_id_received(args)
+            if not self._parse_id_received(args):
+                return False
             self._connectionStatus = API_AUTHENTICATED
             ensure_background_task(self.poll_status(), self._eventLoop)
             ensure_background_task(self.poll_ambtemp(), self._eventLoop)
@@ -190,22 +191,38 @@ class IntesisBox(asyncio.Protocol):
             return self._parse_limits_received(args)
         return False
 
-    def _parse_id_received(self, args):
-        # ID:Model,MAC,IP,Protocol,Version,RSSI
-        info = args.split(",")
-        if len(info) >= 6:
-            self._model = info[0]
-            self._mac = info[1]
-            self._firmversion = info[4]
-            self._rssi = info[5]
+    def _parse_id_received(self, args) -> bool:
+        """Parse the ID reply. Returns True if it carried an identity.
 
-            _LOGGER.debug(
-                "Updated info:",
-                f"model:{self._model}",
-                f"mac:{self._mac}",
-                f"version:{self._firmversion}",
-                f"rssi:{self._rssi}",
-            )
+        Gen 1: Model,MAC,IP,Protocol,Version,RSSI[,Name,Security,Generation]
+        V6:    Model,MAC,IP,Version,RSSI,GwName,SecurityLevel,Generation
+        The Protocol field is absent on V6, shifting every later field left.
+        """
+        info = [field.strip() for field in args.split(",")]
+        if len(info) < 6:
+            _LOGGER.warning("Unexpected ID reply: %r", args)
+            return False
+
+        # V6 omits Protocol; gen 1 always reports it as a non-numeric token
+        # ("ASCII") in position 3.
+        is_v6 = len(info) >= 8 and info[3].upper() != "ASCII"
+        offset = 3 if is_v6 else 4
+
+        self._model = info[0]
+        self._mac = info[1]
+        self._firmversion = info[offset]
+        self._rssi = info[offset + 1]
+        self._controllerType = "V6" if is_v6 else "V1"
+
+        _LOGGER.debug(
+            "Updated info: model=%s mac=%s version=%s rssi=%s type=%s",
+            self._model,
+            self._mac,
+            self._firmversion,
+            self._rssi,
+            self._controllerType,
+        )
+        return True
 
     def _parse_change_received(self, args) -> bool:
         """Parse a CHN status change. Returns True if state was updated."""
@@ -451,8 +468,8 @@ class IntesisBox(asyncio.Protocol):
         return self._setpoint_minimum
 
     @property
-    def rssi(self) -> int | None:
-        """Wireless signal strength of the IntesisBox."""
+    def rssi(self) -> str | None:
+        """Wireless signal strength of the IntesisBox, as the device reports it."""
         return self._rssi
 
     @property
