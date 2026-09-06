@@ -35,6 +35,10 @@ FUNCTION_ERRCODE = "ERRCODE"
 
 NULL_VALUES = ["-32768", "32768"]
 
+# A line with no terminator longer than this is discarded. The longest reply
+# the device sends is a LIMITS list, well under a hundred bytes.
+MAX_LINE_LENGTH = 1024
+
 background_tasks = set()
 
 
@@ -72,13 +76,17 @@ class IntesisBox(asyncio.Protocol):
         self._rssi: int | None = None
         self._eventLoop = loop
 
+        # Receive buffer. TCP is a byte stream, so a single data_received() may
+        # carry a partial line, several lines, or both.
+        self._buffer = b""
+
         # Limits
         self._operation_list: list[str] = []
         self._fan_speed_list: list[str] = []
         self._vertical_vane_list: list[str] = []
         self._horizontal_vane_list: list[str] = []
-        self._setpoint_minimum: int | None = None
-        self._setpoint_maximum: int | None = None
+        self._setpoint_minimum: float | None = None
+        self._setpoint_maximum: float | None = None
 
     def connection_made(self, transport: asyncio.BaseTransport):
         """Asyncio callback for a successful connection."""
@@ -128,32 +136,59 @@ class IntesisBox(asyncio.Protocol):
         _LOGGER.debug(f"Data sent: {cmd!r}")
         await asyncio.sleep(1)
 
-    def data_received(self, data):
-        """Asyncio callback when data is received on the socket."""
-        linesReceived = data.decode("ascii").splitlines()
-        statusChanged = False
+    def data_received(self, data: bytes):
+        """Asyncio callback when data is received on the socket.
 
-        for line in linesReceived:
-            _LOGGER.debug(f"Data received: {line!r}")
-            cmdList = line.split(":", 1)
-            cmd = cmdList[0]
-            args = None
-            if len(cmdList) > 1:
-                args = cmdList[1]
-                if cmd == "ID":
-                    self._parse_id_received(args)
-                    self._connectionStatus = API_AUTHENTICATED
-                    ensure_background_task(self.poll_status(), self._eventLoop)
-                    ensure_background_task(self.poll_ambtemp(), self._eventLoop)
-                elif cmd == "CHN,1":
-                    self._parse_change_received(args)
-                    statusChanged = True
-                elif cmd == "LIMITS":
-                    self._parse_limits_received(args)
-                    statusChanged = True
+        TCP is a byte stream: a chunk may end mid-line, so the tail is kept
+        back until the rest of the line arrives.
+        """
+        self._buffer += data
+        # Per the spec, a line ends with \r, \n or \r\n.
+        self._buffer = self._buffer.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        *lines, self._buffer = self._buffer.split(b"\n")
+        if len(self._buffer) > MAX_LINE_LENGTH:
+            _LOGGER.warning(
+                "Discarding %d bytes with no line ending", len(self._buffer)
+            )
+            self._buffer = b""
+
+        statusChanged = False
+        for raw in lines:
+            if not raw.strip():
+                continue
+            try:
+                line = raw.decode("ascii").strip()
+            except UnicodeDecodeError:
+                _LOGGER.warning("Discarding non-ASCII data: %r", raw)
+                continue
+            try:
+                statusChanged |= self._process_line(line)
+            except Exception:
+                # One bad line must not take the connection down with it:
+                # an exception here closes the transport.
+                _LOGGER.exception("Failed to process line: %r", line)
 
         if statusChanged:
             self._send_update_callback()
+
+    def _process_line(self, line: str) -> bool:
+        """Handle one complete line. Returns True if the device state changed."""
+        _LOGGER.debug("Data received: %r", line)
+        cmdList = line.split(":", 1)
+        if len(cmdList) < 2:
+            return False
+        cmd, args = cmdList
+        if cmd == "ID":
+            self._parse_id_received(args)
+            self._connectionStatus = API_AUTHENTICATED
+            ensure_background_task(self.poll_status(), self._eventLoop)
+            ensure_background_task(self.poll_ambtemp(), self._eventLoop)
+            return False
+        if cmd == "CHN,1":
+            return self._parse_change_received(args)
+        if cmd == "LIMITS":
+            return self._parse_limits_received(args)
+        return False
 
     def _parse_id_received(self, args):
         # ID:Model,MAC,IP,Protocol,Version,RSSI
@@ -172,44 +207,58 @@ class IntesisBox(asyncio.Protocol):
                 f"rssi:{self._rssi}",
             )
 
-    def _parse_change_received(self, args):
-        function = args.split(",")[0]
-        value = args.split(",")[1]
+    def _parse_change_received(self, args) -> bool:
+        """Parse a CHN status change. Returns True if state was updated."""
+        parts = args.split(",", 1)
+        if len(parts) != 2:
+            _LOGGER.warning("Malformed change message: %r", args)
+            return False
+        function, value = parts[0].strip(), parts[1].strip()
         if value in NULL_VALUES:
             value = None
         self._device[function] = value
 
         _LOGGER.debug(f"Updated state: {self._device!r}")
+        return True
 
-    def _parse_limits_received(self, args):
+    def _parse_limits_received(self, args) -> bool:
+        """Parse a LIMITS reply. Returns True if a known limit was updated."""
         split_args = args.split(",", 1)
+        if len(split_args) != 2:
+            _LOGGER.warning("Malformed limits message: %r", args)
+            return False
 
-        if len(split_args) == 2:
-            function = split_args[0]
-            values = split_args[1][1:-1].split(",")
+        function = split_args[0].strip()
+        values = [v.strip() for v in split_args[1].strip().strip("[]").split(",")]
 
-            if function == FUNCTION_SETPOINT and len(values) == 2:
+        if function == FUNCTION_SETPOINT and len(values) == 2:
+            try:
                 self._setpoint_minimum = int(values[0]) / 10
                 self._setpoint_maximum = int(values[1]) / 10
-            elif function == FUNCTION_FANSP:
-                self._fan_speed_list = values
-            elif function == FUNCTION_MODE:
-                self._operation_list = values
-            elif function == FUNCTION_VANEUD:
-                self._vertical_vane_list = values
-            elif function == FUNCTION_VANELR:
-                self._horizontal_vane_list = values
+            except ValueError:
+                _LOGGER.warning("Non-numeric setpoint limits: %r", values)
+                return False
+        elif function == FUNCTION_FANSP:
+            self._fan_speed_list = values
+        elif function == FUNCTION_MODE:
+            self._operation_list = values
+        elif function == FUNCTION_VANEUD:
+            self._vertical_vane_list = values
+        elif function == FUNCTION_VANELR:
+            self._horizontal_vane_list = values
+        else:
+            return False
 
-            _LOGGER.debug(
-                "Updated limits: ",
-                f"{self._setpoint_minimum=}",
-                f"{self._setpoint_maximum=}",
-                f"{self._fan_speed_list=}",
-                f"{self._operation_list=}",
-                f"{self._vertical_vane_list=}",
-                f"{self._horizontal_vane_list=}",
-            )
-        return
+        _LOGGER.debug(
+            "Updated limits: setpoint=%s-%s fan=%s mode=%s vaneud=%s vanelr=%s",
+            self._setpoint_minimum,
+            self._setpoint_maximum,
+            self._fan_speed_list,
+            self._operation_list,
+            self._vertical_vane_list,
+            self._horizontal_vane_list,
+        )
+        return True
 
     def connection_lost(self, exc):
         """Asyncio callback for a lost TCP connection."""
