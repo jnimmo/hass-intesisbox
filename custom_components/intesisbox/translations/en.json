@@ -16,5 +16,21 @@
         "description": "Integration for Intesis Home Automation Interface devices supporting the WMP protocol over the local network"
       }
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "IntesisBox Options",
+        "description": "Optionally select a power sensor to determine whether the AC unit is actively running.",
+        "data": {
+          "power_sensor": "Power sensor entity",
+          "power_threshold": "Running threshold (W)"
+        },
+        "data_description": {
+          "power_sensor": "A sensor with device class 'power' used to detect active operation.",
+          "power_threshold": "Power draw (in watts) above which the unit is considered actively running."
+        }
+      }
+    }
   }
 }

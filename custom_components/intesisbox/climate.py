@@ -16,6 +16,7 @@ from homeassistant.components.climate import (
     PLATFORM_SCHEMA,
     ClimateEntity,
     ClimateEntityFeature,
+    HVACAction,
     HVACMode,
 )
 from homeassistant.components.climate.const import ATTR_HVAC_MODE
@@ -24,13 +25,17 @@ from homeassistant.const import (
     CONF_HOST,
     CONF_NAME,
     CONF_UNIQUE_ID,
+    STATE_UNAVAILABLE,
     STATE_UNKNOWN,
     UnitOfTemperature,
 )
+from homeassistant.core import callback
 from homeassistant.exceptions import PlatformNotReady
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.event import async_track_state_change_event
 
 from . import DOMAIN
+from .const import CONF_POWER_SENSOR, CONF_POWER_THRESHOLD, DEFAULT_POWER_THRESHOLD
 from .intesisbox import IntesisBox
 
 _LOGGER = logging.getLogger(__name__)
@@ -68,6 +73,13 @@ MAP_STATE_ICONS = {
     HVACMode.FAN_ONLY: "mdi:fan",
 }
 
+MAP_HVAC_MODE_TO_ACTION = {
+    HVACMode.HEAT: HVACAction.HEATING,
+    HVACMode.COOL: HVACAction.COOLING,
+    HVACMode.DRY: HVACAction.DRYING,
+    HVACMode.FAN_ONLY: HVACAction.FAN,
+}
+
 FAN_MODE_I_TO_E = {
     "AUTO": "auto",
     "1": "low",
@@ -102,7 +114,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 async def async_setup_entry(hass, entry, async_add_entities):
     """Add entries from config."""
     controller = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([IntesisBoxAC(controller)], True)
+    async_add_entities([IntesisBoxAC(controller, entry=entry)], True)
 
 
 class IntesisBoxAC(ClimateEntity):
@@ -113,10 +125,17 @@ class IntesisBoxAC(ClimateEntity):
         controller: IntesisBox,
         name: str | None = None,
         unique_id: str | None = None,
+        entry=None,
     ):
         """Initialize the thermostat."""
         _LOGGER.debug("Setting up climate device.")
         self._controller = controller
+
+        options = entry.options if entry else {}
+        self._power_sensor_entity_id: str | None = options.get(CONF_POWER_SENSOR)
+        self._power_threshold: float = float(
+            options.get(CONF_POWER_THRESHOLD, DEFAULT_POWER_THRESHOLD)
+        )
 
         self._deviceid = controller.device_mac_address
         self._devicename = name or controller.device_mac_address
@@ -174,6 +193,22 @@ class IntesisBoxAC(ClimateEntity):
         _LOGGER.debug("Finished setting up climate entity!")
         self._controller.add_update_callback(self.update_callback)
 
+    async def async_added_to_hass(self):
+        """Subscribe to power sensor state changes when added to HA."""
+        if self._power_sensor_entity_id:
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass,
+                    [self._power_sensor_entity_id],
+                    self._handle_power_sensor_update,
+                )
+            )
+
+    @callback
+    def _handle_power_sensor_update(self, event):
+        """Update state when the power sensor changes."""
+        self.async_write_ha_state()
+
     @property
     def name(self):
         """Return the name of the AC device."""
@@ -214,6 +249,39 @@ class IntesisBoxAC(ClimateEntity):
             attrs["ha_update_type"] = "poll"
 
         return attrs
+
+    @property
+    def hvac_action(self) -> HVACAction | None:
+        """Return the current HVAC action (heating, cooling, idle, off, etc.)."""
+        if not self._power:
+            return HVACAction.OFF
+
+        if self._power_sensor_entity_id and self.hass:
+            state = self.hass.states.get(self._power_sensor_entity_id)
+            if state is not None and state.state not in (
+                STATE_UNKNOWN,
+                STATE_UNAVAILABLE,
+                "",
+            ):
+                try:
+                    is_running = float(state.state) >= self._power_threshold
+                except (ValueError, TypeError):
+                    is_running = None
+
+                if is_running is False:
+                    return HVACAction.IDLE
+
+        # For HEAT_COOL (auto) mode, infer heating/cooling from temperature delta.
+        if self._current_operation == HVACMode.HEAT_COOL:
+            if self._current_temp is not None and self._target_temperature is not None:
+                return (
+                    HVACAction.HEATING
+                    if self._current_temp < self._target_temperature
+                    else HVACAction.COOLING
+                )
+            return None
+
+        return MAP_HVAC_MODE_TO_ACTION.get(self._current_operation)
 
     def set_temperature(self, **kwargs):
         """Set new target temperature."""
