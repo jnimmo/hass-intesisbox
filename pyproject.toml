@@ -9,12 +9,27 @@ dependencies = [
     "homeassistant>=2025.12.4",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-homeassistant-custom-component==0.13.301",
+]
+
 [tool.pytest.ini_options]
 log_format = "%(asctime)s.%(msecs)03d %(levelname)-8s %(threadName)s %(name)s:%(filename)s:%(lineno)s %(message)s"
 log_date_format = "%Y-%m-%d %H:%M:%S"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 filterwarnings = []
+
+[tool.mypy]
+# The package lives under custom_components/, which has no __init__.py. With a
+# tests/ package importing custom_components.intesisbox, mypy would otherwise
+# see each module under two names and refuse to run.
+explicit_package_bases = true
+namespace_packages = true
+mypy_path = "."
 
 [tool.ruff]
 target-version = "py313"
