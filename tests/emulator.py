@@ -44,6 +44,10 @@ class Emulator(asyncio.Protocol):
     tear_frames = False
     #: Which ID banner to report.
     id_banner = ID_GEN1
+    #: Accept the connection and answer nothing at all.
+    silent = False
+    #: Live connections, so a test can drop them.
+    connections: list[Emulator] = []
 
     def __init__(self) -> None:
         """Start with a fresh copy of the default device state."""
@@ -55,16 +59,28 @@ class Emulator(asyncio.Protocol):
         """Return the class-level knobs to their defaults."""
         cls.tear_frames = False
         cls.id_banner = ID_GEN1
+        cls.silent = False
+        cls.connections = []
+
+    @classmethod
+    def drop_all(cls) -> None:
+        """Close every live connection, as the device's watchdog would."""
+        for conn in list(cls.connections):
+            conn.transport.close()
+        cls.connections = []
 
     def connection_made(self, transport):
-        """Start the connection's writer."""
+        """Register the connection and start its writer."""
         self.transport = transport
         self._outbox: asyncio.Queue[bytes] = asyncio.Queue()
         self._writer = asyncio.get_running_loop().create_task(self._drain())
+        Emulator.connections.append(self)
 
     def connection_lost(self, exc):
-        """Stop the writer."""
+        """Stop the writer and forget the connection."""
         self._writer.cancel()
+        if self in Emulator.connections:
+            Emulator.connections.remove(self)
 
     def send(self, text: str) -> None:
         """Queue a response for the writer."""
@@ -106,6 +122,8 @@ class Emulator(asyncio.Protocol):
 
     def handle(self, line: str) -> None:
         """Respond to one command."""
+        if Emulator.silent:
+            return
         head = line.split(",")[0]
 
         if line == "ID":
