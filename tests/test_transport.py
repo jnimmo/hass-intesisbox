@@ -10,12 +10,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 import importlib.util
+import logging
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from .emulator import start
+from .emulator import ID_V6, Emulator, start
 
 
 @pytest.fixture(autouse=True)
@@ -136,3 +137,110 @@ def test_status_change_notifies_subscribers():
     box.data_received(b"CHN,1:AMBTEMP,32768\r\n")  # the device's null value
     assert box.ambient_temperature is None
     assert calls == [True]
+
+
+async def test_torn_frames_are_reassembled(port):
+    """A reply split byte-by-byte must still parse.
+
+    Real devices do this under load. data_received() used to call
+    splitlines() on each raw chunk, so a frame cut mid-line raised IndexError
+    inside the protocol callback and asyncio closed the connection.
+    """
+    Emulator.tear_frames = True
+    box = await _connect_and_handshake(port)
+    try:
+        _assert_handshake_state(box)
+    finally:
+        await _shutdown(box)
+
+
+def test_partial_line_is_held_until_the_rest_arrives():
+    """Nothing is parsed from a fragment; the whole line is, once complete."""
+    box = intesisbox.IntesisBox("127.0.0.1", 1, loop=None)
+    box.data_received(b"CHN,1:AMBTE")
+    assert box.ambient_temperature is None
+    box.data_received(b"MP,220\r\n")
+    assert box.ambient_temperature == 22.0
+
+
+def test_line_endings_are_all_accepted():
+    """The spec allows \\r, \\n or \\r\\n; a \\r\\n split across chunks is one end."""
+    box = intesisbox.IntesisBox("127.0.0.1", 1, loop=None)
+    box.data_received(b"CHN,1:MODE,HEAT\rCHN,1:FANSP,2\nCHN,1:ONOFF,ON\r")
+    box.data_received(b"\nCHN,1:SETPTEMP,215\r\n")
+    assert box.mode == "HEAT"
+    assert box.fan_speed == "2"
+    assert box.is_on
+    assert box.setpoint == 21.5
+
+
+def test_runaway_line_is_discarded(caplog):
+    """Bytes that never see a line ending must not accumulate forever."""
+    box = intesisbox.IntesisBox("127.0.0.1", 1, loop=None)
+    with caplog.at_level(logging.WARNING):
+        box.data_received(b"x" * (intesisbox.MAX_LINE_LENGTH + 1))
+    assert box._buffer == b""
+    assert "no line ending" in caplog.text
+    # The stream is usable again afterwards.
+    box.data_received(b"CHN,1:MODE,DRY\r\n")
+    assert box.mode == "DRY"
+
+
+def test_malformed_lines_are_skipped_not_fatal(caplog):
+    """A garbage line must be logged and skipped, not kill the connection."""
+    box = intesisbox.IntesisBox("127.0.0.1", 1, loop=None)
+    pushes: list[bool] = []
+    box.add_update_callback(lambda: pushes.append(True))
+    with caplog.at_level(logging.WARNING):
+        box.data_received(
+            b"\r\n\r\n"  # blank lines
+            b"CHN,1:NOCOMMA\r\n"  # no value
+            b"LIMITS:\r\n"  # nothing after the colon
+            b"LIMITS:SETPTEMP,[a,b]\r\n"  # non-numeric limits
+            b"CHN,1:MODE,H\xc3\xa9AT\r\n"  # non-ASCII
+            b"HELLO\r\n"  # no colon at all
+            b"CHN,1:MODE,COOL\r\n"
+        )
+    assert box.mode == "COOL"
+    assert box.min_setpoint is None
+    # One real change in that chunk, so exactly one notification.
+    assert pushes == [True]
+    assert "Malformed change message" in caplog.text
+    assert "Non-numeric setpoint limits" in caplog.text
+    assert "non-ASCII" in caplog.text
+
+
+def test_a_parser_exception_does_not_kill_the_socket(caplog):
+    """An unexpected failure on one line must not take the connection down."""
+    box = intesisbox.IntesisBox("127.0.0.1", 1, loop=None)
+    box._parse_change_received = lambda args: 1 / 0  # type: ignore[method-assign]
+    with caplog.at_level(logging.ERROR):
+        box.data_received(b"CHN,1:MODE,HEAT\r\nCHN,1:ONOFF,ON\r\n")
+    assert "Failed to process line" in caplog.text
+
+
+async def test_v6_id_banner_field_offsets():
+    """V6 gateways omit the Protocol field, shifting version and RSSI left."""
+    box = intesisbox.IntesisBox("127.0.0.1", 1, loop=asyncio.get_running_loop())
+    try:
+        box.data_received(f"{ID_V6}\r\n".encode())
+        assert box.device_model == "INWMPUNI001I000"
+        assert box.device_mac_address == "001DC9A2C911"
+        assert box.firmware_version == "v1.0.1"
+        assert box.rssi == "-44"
+        assert box.is_connected
+    finally:
+        # Never connected a socket, so there is nothing to stop; only the
+        # pollers the ID reply started.
+        await _reap_tasks()
+
+
+def test_short_id_reply_does_not_count_as_connected(caplog):
+    """A reply with no identity in it is logged, and the handshake goes on."""
+    box = intesisbox.IntesisBox("127.0.0.1", 1, loop=None)
+    with caplog.at_level(logging.WARNING):
+        box.data_received(b"ID:too,short\r\n")
+    assert "Unexpected ID reply" in caplog.text
+    assert box.device_mac_address is None
+    assert not box.is_connected
+    assert not intesisbox.background_tasks
