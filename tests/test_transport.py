@@ -244,3 +244,197 @@ def test_short_id_reply_does_not_count_as_connected(caplog):
     assert box.device_mac_address is None
     assert not box.is_connected
     assert not intesisbox.background_tasks
+
+
+# --------------------------------------------------------------------------
+# Keepalive, reconnect and task lifecycle
+# --------------------------------------------------------------------------
+
+
+class FakeTransport:
+    """Stands in for asyncio's transport so the periodic tasks can be observed."""
+
+    def __init__(self) -> None:
+        self.written: list[bytes] = []
+        self.closed = False
+
+    def write(self, data: bytes) -> None:
+        self.written.append(data)
+
+    def is_closing(self) -> bool:
+        return self.closed
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _live_tasks(box: Any) -> list[str]:
+    return sorted(name for name, task in box._tasks.items() if not task.done())
+
+
+async def test_periodic_tasks_send_keepalive_and_polls(monkeypatch):
+    """PING must actually go out, alongside the status and temperature polls."""
+    monkeypatch.setattr(intesisbox, "KEEPALIVE_INTERVAL", 0.05)
+    monkeypatch.setattr(intesisbox, "AMBTEMP_POLL_INTERVAL", 0.05)
+    box = intesisbox.IntesisBox("127.0.0.1", 1, loop=asyncio.get_running_loop())
+    transport = FakeTransport()
+    box.connection_made(transport)
+    box.data_received(f"{ID_V6}\r\n".encode())
+    await asyncio.sleep(0.3)
+    try:
+        assert b"PING\r" in transport.written
+        assert b"GET,1:AMBTEMP\r" in transport.written
+        assert b"GET,1:*\r" in transport.written
+    finally:
+        await _shutdown(box)
+
+
+async def test_reconnect_does_not_duplicate_pollers(port):
+    """Reconnecting must replace the periodic tasks, not add to them."""
+    box = await _connect_and_handshake(port)
+    try:
+        Emulator.drop_all()
+        await _wait_until(lambda: not box.is_connected, timeout=5)
+
+        await _wait_until(lambda: box.is_connected, timeout=30)
+        # Let the handshake and the retired reconnect task finish.
+        await _wait_until(
+            lambda: not {"reconnect", "init"} & set(_live_tasks(box)), timeout=15
+        )
+        assert _live_tasks(box) == ["keepalive", "poll_ambtemp", "poll_status"]
+    finally:
+        await _shutdown(box)
+
+
+async def test_failed_connection_does_not_wedge_reconnect(port):
+    """A failed first attempt must reset state instead of raising later.
+
+    Previously the status stayed at CONNECTING and the next connect() hit
+    AttributeError on a None transport, permanently breaking reconnection.
+    """
+    box = intesisbox.IntesisBox("127.0.0.1", 1, loop=asyncio.get_running_loop())
+    assert await box.async_connect(timeout=3) is False
+    assert box.is_disconnected
+    box.stop()
+
+    box._port = port
+    assert await box.async_connect(timeout=15)
+    await _shutdown(box)
+
+
+async def test_stop_cancels_all_tasks(port):
+    """stop() must leave nothing running, and must not raise without a socket."""
+    box = await _connect_and_handshake(port)
+    box.stop()
+    await asyncio.sleep(0.1)
+    assert all(task.done() for task in box._tasks.values())
+    assert not box.is_connected
+    box.stop()  # a second stop, with no transport, is harmless
+    await _reap_tasks()
+
+
+async def test_silent_device_times_out_the_handshake(monkeypatch, port):
+    """A box that accepts TCP and never answers must not count as connected."""
+    monkeypatch.setattr(intesisbox, "CONNECT_TIMEOUT", 0.3)
+    Emulator.silent = True
+    box = intesisbox.IntesisBox("127.0.0.1", port, loop=asyncio.get_running_loop())
+    try:
+        assert await box.async_connect(timeout=0.5) is False
+        assert not box.is_connected
+        # The reconnect loop now owns the retry; let it hit the same wall once.
+        box._reconnect_delay = 0.05
+        await asyncio.sleep(1.2)
+        assert not box.is_connected
+        assert box._reconnect_delay > 0.05, "a failed handshake must grow the backoff"
+    finally:
+        await _shutdown(box)
+
+
+async def test_reconnect_backs_off_while_the_device_is_unreachable():
+    box = intesisbox.IntesisBox("127.0.0.1", 1, loop=asyncio.get_running_loop())
+    box._reconnect_delay = 0.05
+    box._schedule_reconnect()
+    await asyncio.sleep(0.5)
+    try:
+        assert box._reconnect_delay > 0.05
+        assert not box.is_connected
+    finally:
+        await _shutdown(box)
+
+
+async def test_connection_lost_after_stop_does_not_reconnect():
+    box = intesisbox.IntesisBox("127.0.0.1", 1, loop=asyncio.get_running_loop())
+    box.stop()
+    box.connection_lost(OSError("reset"))
+    assert "reconnect" not in box._tasks
+    await _reap_tasks()
+
+
+async def test_missing_address_is_a_connection_failure():
+    box = intesisbox.IntesisBox("", 0, loop=asyncio.get_running_loop())
+    assert await box.async_connect(timeout=1) is False
+    await _shutdown(box)
+
+
+async def test_connect_is_idempotent_and_safe_from_another_thread(port):
+    """connect() may be called from an executor thread; a second call is a no-op."""
+    loop = asyncio.get_running_loop()
+    box = intesisbox.IntesisBox("127.0.0.1", port, loop=loop)
+    try:
+        await loop.run_in_executor(None, box.connect)
+        await _wait_until(lambda: box.is_connected)
+        assert await box.async_connect(timeout=1) is True
+        box.connect()
+        await asyncio.sleep(0.2)
+        assert len(Emulator.connections) == 1
+    finally:
+        await _shutdown(box)
+
+
+async def test_write_is_dropped_when_the_transport_is_gone(caplog):
+    box = intesisbox.IntesisBox("127.0.0.1", 1, loop=asyncio.get_running_loop())
+    with caplog.at_level(logging.DEBUG, logger="intesisbox"):
+        box._write("PING")
+    assert "Dropping" in caplog.text
+
+
+async def test_background_task_failures_are_logged(caplog):
+    async def boom():
+        raise RuntimeError("task blew up")
+
+    with caplog.at_level(logging.ERROR):
+        task = intesisbox.ensure_background_task(boom(), asyncio.get_running_loop())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    assert task.done()
+    assert "Background task failed" in caplog.text
+
+
+async def test_two_connect_calls_open_one_socket(port):
+    """A second connect() while the first is still opening must join it."""
+    loop = asyncio.get_running_loop()
+    box = intesisbox.IntesisBox("127.0.0.1", port, loop=loop)
+    try:
+        box.connect()
+        box.connect()
+        await loop.run_in_executor(None, box.connect)
+        await _wait_until(lambda: box.is_connected)
+        await asyncio.sleep(0.2)
+        assert len(Emulator.connections) == 1
+    finally:
+        await _shutdown(box)
+
+
+async def test_stop_cancels_a_connect_still_in_flight(monkeypatch, port):
+    """stop() during a pending connect must not let a socket appear later."""
+    monkeypatch.setattr(intesisbox, "CONNECT_TIMEOUT", 5)
+    Emulator.silent = True
+    box = intesisbox.IntesisBox("127.0.0.1", port, loop=asyncio.get_running_loop())
+    box.connect()
+    await _wait_until(lambda: box._transport is not None)
+    box.stop()
+    await asyncio.sleep(0.3)
+    assert all(task.done() for task in box._tasks.values())
+    assert not box.is_connected
+    assert Emulator.connections == []
+    await _reap_tasks()

@@ -39,17 +39,39 @@ NULL_VALUES = ["-32768", "32768"]
 # the device sends is a LIMITS list, well under a hundred bytes.
 MAX_LINE_LENGTH = 1024
 
+# The WMP spec says the device closes the TCP connection after 1 minute
+# without traffic, and recommends a keepalive every 30-60 s.
+KEEPALIVE_INTERVAL = 45
+# Full status refresh. Changes arrive spontaneously as CHN messages, so this is
+# only a backstop against missed pushes.
+STATUS_POLL_INTERVAL = 60 * 5
+# Ambient temperature is pushed on change, but poll it as well so a missed push
+# cannot leave the reported temperature stale indefinitely.
+AMBTEMP_POLL_INTERVAL = 60
+
+# The spec requires more than 1 second between opening and closing TCP sockets.
+# Backoff starts there and grows to avoid hammering a device that is off.
+RECONNECT_MIN_DELAY = 1.5
+RECONNECT_MAX_DELAY = 60
+
+# How long a freshly opened socket may go without answering ID before it is
+# closed and the reconnect backoff grows.
+CONNECT_TIMEOUT = 15
+
 background_tasks = set()
 
 
 def clean_background_task(task):
-    """Handle background task completion."""
+    """Handle background task completion, logging any unexpected failure."""
     background_tasks.discard(task)
-    _ = task.result()  # to propagate exceptions
+    if task.cancelled():
+        return
+    if exc := task.exception():
+        _LOGGER.error("Background task failed: %r", exc)
 
 
 def ensure_background_task(coro, loop):
-    """Ensure background task is running."""
+    """Schedule a coroutine on the given loop and keep a reference to it."""
     task = asyncio.ensure_future(coro, loop=loop)
     background_tasks.add(task)
     task.add_done_callback(clean_background_task)
@@ -80,6 +102,17 @@ class IntesisBox(asyncio.Protocol):
         # carry a partial line, several lines, or both.
         self._buffer = b""
 
+        # Set once the device has answered ID on the current connection.
+        self._connected = asyncio.Event()
+
+        # Owned tasks by name, cancelled and replaced on every (re)connect.
+        self._tasks: dict[str, asyncio.Task] = {}
+        self._stopped = False
+
+        # Reconnect backoff, held on the instance so it survives the reconnect
+        # task being cancelled and restarted by connection_lost.
+        self._reconnect_delay = RECONNECT_MIN_DELAY
+
         # Limits
         self._operation_list: list[str] = []
         self._fan_speed_list: list[str] = []
@@ -88,29 +121,234 @@ class IntesisBox(asyncio.Protocol):
         self._setpoint_minimum: float | None = None
         self._setpoint_maximum: float | None = None
 
+    # ------------------------------------------------------------------
+    # Task ownership
+    # ------------------------------------------------------------------
+
+    def _start_task(self, name: str, coro) -> None:
+        """Start a named task, cancelling any previous instance first.
+
+        Without this, a reconnect that lands inside a poller's sleep leaves the
+        old task alive alongside the new one and the traffic doubles each time.
+        """
+        self._cancel_task(name)
+        self._tasks[name] = ensure_background_task(coro, self._eventLoop)
+
+    def _cancel_task(self, name: str) -> None:
+        """Cancel a named task if it is running."""
+        task = self._tasks.pop(name, None)
+        if task and not task.done():
+            task.cancel()
+
+    def _cancel_all_tasks(self) -> None:
+        """Cancel every owned task."""
+        for name in list(self._tasks):
+            self._cancel_task(name)
+
+    # ------------------------------------------------------------------
+    # Connection lifecycle
+    # ------------------------------------------------------------------
+
     def connection_made(self, transport: asyncio.BaseTransport):
         """Asyncio callback for a successful connection."""
-        _LOGGER.debug("Connected to IntesisBox")
-        self._transport = transport
-        ensure_background_task(self.query_initial_state(), self._eventLoop)
+        _LOGGER.debug("Connected to IntesisBox %s:%s", self._ip, self._port)
+        self._transport = transport  # type: ignore[assignment]
+        self._buffer = b""
+        self._connectionStatus = API_CONNECTING
+        self._connected.clear()
+        self._start_task("init", self.query_initial_state())
+
+    def _become_connected(self) -> None:
+        """Mark the device connected and start the periodic tasks."""
+        self._connectionStatus = API_AUTHENTICATED
+        self._reconnect_delay = RECONNECT_MIN_DELAY
+        self._connected.set()
+        _LOGGER.debug("IntesisBox %s connected", self._ip)
+        # Availability just changed; tell the entities rather than leaving
+        # them to notice on the next status push.
+        self._send_update_callback()
+        # Only ever one of each, however many times we reconnect.
+        self._start_task("keepalive", self.keep_alive())
+        self._start_task("poll_status", self.poll_status())
+        self._start_task("poll_ambtemp", self.poll_ambtemp())
+
+    def connection_lost(self, exc):
+        """Asyncio callback for a lost TCP connection."""
+        if exc:
+            _LOGGER.warning("Connection to IntesisBox %s lost: %r", self._ip, exc)
+        else:
+            _LOGGER.info("IntesisBox %s closed the connection", self._ip)
+
+        # A drop before the handshake completed is a failed attempt: grow the
+        # backoff here, because cancelling the reconnect task below would
+        # otherwise reset it to the minimum on every accept-then-drop cycle.
+        # A deliberate stop is neither a success nor a failure.
+        if self._stopped:
+            pass
+        elif self._connectionStatus == API_AUTHENTICATED:
+            self._reconnect_delay = RECONNECT_MIN_DELAY
+        else:
+            self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_MAX_DELAY)
+
+        self._connectionStatus = API_DISCONNECTED
+        self._transport = None
+        self._connected.clear()
+        self._cancel_all_tasks()
+        self._send_update_callback()
+
+        if not self._stopped:
+            self._schedule_reconnect()
+
+    def _schedule_reconnect(self) -> None:
+        """Start the reconnect loop if it is not already running."""
+        task = self._tasks.get("reconnect")
+        if task and not task.done():
+            return
+        self._tasks["reconnect"] = ensure_background_task(
+            self._reconnect_loop(), self._eventLoop
+        )
+
+    async def _reconnect_loop(self) -> None:
+        """Reconnect with exponential backoff until the device answers.
+
+        The backoff lives on the instance rather than in a local: closing a
+        half-open transport below fires connection_lost, which cancels and
+        restarts this task, and a local delay would restart at the minimum.
+        """
+        while not self._stopped and not self.is_connected:
+            await asyncio.sleep(self._reconnect_delay)
+            if self._stopped or self.is_connected:
+                return
+            try:
+                await self._open_connection()
+            except (OSError, TimeoutError) as exc:
+                _LOGGER.debug("Reconnect to %s failed: %r", self._ip, exc)
+                self._reconnect_delay = min(
+                    self._reconnect_delay * 2, RECONNECT_MAX_DELAY
+                )
+                continue
+            # A socket that opens but never answers ID is not a usable device.
+            try:
+                async with asyncio.timeout(CONNECT_TIMEOUT):
+                    await self._connected.wait()
+            except TimeoutError:
+                _LOGGER.debug("IntesisBox %s connected but did not answer", self._ip)
+                # connection_lost grows the backoff for this failed attempt.
+                self._close_transport()
+                continue
+            _LOGGER.info("Reconnected to IntesisBox %s", self._ip)
+            return
+
+    async def _open_connection(self) -> None:
+        """Open the TCP connection. Raises OSError or TimeoutError on failure."""
+        if not self._ip or not self._port:
+            raise OSError("Missing IP address or port")
+        self._connectionStatus = API_CONNECTING
+        _LOGGER.debug("Opening connection to IntesisBox %s:%s", self._ip, self._port)
+        try:
+            # A host that drops SYNs rather than refusing can hold a connect
+            # for minutes; bound it the same way as the handshake.
+            async with asyncio.timeout(CONNECT_TIMEOUT):
+                await self._eventLoop.create_connection(
+                    lambda: self, self._ip, self._port
+                )
+        except (OSError, TimeoutError):
+            # Reset the status, otherwise every later attempt sees CONNECTING
+            # and refuses to try again.
+            self._connectionStatus = API_DISCONNECTED
+            raise
+
+    def _attempt_in_progress(self) -> bool:
+        """Whether a socket is open or another connect or reconnect task is live."""
+        if self._transport is not None:
+            return True
+        current = asyncio.current_task()
+        for name in ("connect", "reconnect"):
+            task = self._tasks.get(name)
+            if task is not None and not task.done() and task is not current:
+                return True
+        return False
+
+    async def async_connect(self, timeout: float = 30) -> bool:
+        """Connect and wait until the device has answered ID.
+
+        Returns True once connected, False if the device could not be reached
+        or did not identify itself within the timeout. Either failure leaves
+        the reconnect loop running. If an attempt is already under way this
+        joins it rather than opening a second socket.
+        """
+        self._stopped = False
+        if self.is_connected:
+            return True
+        if not self._attempt_in_progress():
+            try:
+                await self._open_connection()
+            except (OSError, TimeoutError) as exc:
+                _LOGGER.debug("Connection to %s failed: %r", self._ip, exc)
+                self._schedule_reconnect()
+                return False
+        try:
+            async with asyncio.timeout(timeout):
+                await self._connected.wait()
+        except TimeoutError:
+            _LOGGER.debug("IntesisBox %s did not answer ID", self._ip)
+            self._close_transport()
+            self._schedule_reconnect()
+            return False
+        return True
+
+    def connect(self):
+        """Connect to the device, from any thread. A no-op while connected."""
+        if self.is_connected:
+            return
+        self._eventLoop.call_soon_threadsafe(self._ensure_connecting)
+
+    def _ensure_connecting(self) -> None:
+        """Start a connection attempt unless one is already under way.
+
+        Runs on the event loop, so its ordering against stop() is fixed.
+        """
+        self._stopped = False
+        if self.is_connected or self._attempt_in_progress():
+            return
+        self._start_task("connect", self.async_connect())
+
+    def _close_transport(self) -> None:
+        """Close the transport if there is one."""
+        if self._transport is not None and not self._transport.is_closing():
+            self._transport.close()
+
+    def stop(self):
+        """Shut down connectivity with the device and cancel all tasks."""
+        self._stopped = True
+        self._connectionStatus = API_DISCONNECTED
+        self._connected.clear()
+        self._cancel_all_tasks()
+        self._close_transport()
+        self._transport = None
+
+    # ------------------------------------------------------------------
+    # Outbound commands
+    # ------------------------------------------------------------------
 
     async def keep_alive(self):
-        """Send a keepalive command to reset it's watchdog timer."""
-        while self.is_connected:
+        """Send PING periodically to reset the device's watchdog timer."""
+        while True:
+            await asyncio.sleep(KEEPALIVE_INTERVAL)
             _LOGGER.debug("Sending keepalive")
             self._write("PING")
-            await asyncio.sleep(45)
-        else:
-            _LOGGER.debug("Not connected, skipping keepalive")
+
+    async def poll_status(self):
+        """Periodically request a full status refresh."""
+        while True:
+            self._write("GET,1:*")
+            await asyncio.sleep(STATUS_POLL_INTERVAL)
 
     async def poll_ambtemp(self):
-        """Retrieve Ambient Temperature to prevent integration timeouts."""
-        while self.is_connected:
-            _LOGGER.debug("Sending AMBTEMP")
-            self._write("GET,1:AMBTEMP")
-            await asyncio.sleep(10)
-        else:
-            _LOGGER.debug("Not connected, skipping Ambient Temp Request")
+        """Periodically refresh the ambient temperature."""
+        while True:
+            await asyncio.sleep(AMBTEMP_POLL_INTERVAL)
+            self._write(f"GET,1:{FUNCTION_AMBTEMP}")
 
     async def query_initial_state(self):
         """Fetch configuration from the device upon connection."""
@@ -127,13 +365,16 @@ class IntesisBox(asyncio.Protocol):
             await asyncio.sleep(1)
 
     def _write(self, cmd):
-        self._transport.write(f"{cmd}\r".encode("ascii"))
-        _LOGGER.debug(f"Data sent: {cmd!r}")
+        transport = self._transport
+        if transport is None or transport.is_closing():
+            _LOGGER.debug("Dropping %r, transport is gone", cmd)
+            return
+        transport.write(f"{cmd}\r".encode("ascii"))
+        _LOGGER.debug("Data sent: %r", cmd)
 
     async def _writeasync(self, cmd):
         """Async write to slow down commands and await response from units."""
-        self._transport.write(f"{cmd}\r".encode("ascii"))
-        _LOGGER.debug(f"Data sent: {cmd!r}")
+        self._write(cmd)
         await asyncio.sleep(1)
 
     def data_received(self, data: bytes):
@@ -179,11 +420,8 @@ class IntesisBox(asyncio.Protocol):
             return False
         cmd, args = cmdList
         if cmd == "ID":
-            if not self._parse_id_received(args):
-                return False
-            self._connectionStatus = API_AUTHENTICATED
-            ensure_background_task(self.poll_status(), self._eventLoop)
-            ensure_background_task(self.poll_ambtemp(), self._eventLoop)
+            if self._parse_id_received(args):
+                self._become_connected()
             return False
         if cmd == "CHN,1":
             return self._parse_change_received(args)
@@ -276,58 +514,6 @@ class IntesisBox(asyncio.Protocol):
             self._horizontal_vane_list,
         )
         return True
-
-    def connection_lost(self, exc):
-        """Asyncio callback for a lost TCP connection."""
-        self._connectionStatus = API_DISCONNECTED
-        _LOGGER.info("The server closed the connection")
-        self._send_update_callback()
-
-    def connect(self):
-        """Public method for connecting to IntesisHome API."""
-        if self._connectionStatus == API_DISCONNECTED:
-            self._connectionStatus = API_CONNECTING
-            try:
-                # Must poll to get the authentication token
-                if self._ip and self._port:
-                    # Create asyncio socket
-                    coro = self._eventLoop.create_connection(
-                        lambda: self, self._ip, self._port
-                    )
-                    _LOGGER.debug(
-                        "Opening connection to IntesisBox %s:%s", self._ip, self._port
-                    )
-                    ensure_background_task(coro, self._eventLoop)
-                else:
-                    _LOGGER.debug("Missing IP address or port.")
-                    self._connectionStatus = API_DISCONNECTED
-
-            except Exception as e:
-                _LOGGER.error("%s Exception. %s / %s", type(e), repr(e.args), e)
-                self._connectionStatus = API_DISCONNECTED
-        elif self._connectionStatus == API_CONNECTING:
-            _LOGGER.debug("connect() called but already connecting")
-            if self._transport.is_closing():
-                _LOGGER.debug(
-                    "Socket is closing while trying to connect. Force reconnection"
-                )
-                self._connectionStatus = API_DISCONNECTED
-                self._transport.close()
-                self._send_update_callback()
-
-    def stop(self):
-        """Public method for shutting down connectivity with the envisalink."""
-        self._connectionStatus = API_DISCONNECTED
-        self._transport.close()
-
-    async def poll_status(self, sendcallback=False):
-        """Periodically poll for updates since the controllers don't always update reliably."""
-        while self.is_connected:
-            _LOGGER.debug("Polling for update")
-            self._write("GET,1:*")
-            await asyncio.sleep(60 * 5)  # 5 minutes
-        else:
-            _LOGGER.debug("Not connected, skipping poll_status()")
 
     def set_temperature(self, setpoint):
         """Public method for setting the temperature."""
