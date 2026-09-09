@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 import logging
+from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -481,6 +482,34 @@ class IntesisBox(asyncio.Protocol):
     def horizontal_swing(self) -> str | None:
         """Current horizontal vane setting."""
         return self._device.get(FUNCTION_VANELR)
+
+    # ------------------------------------------------------------------
+    # Diagnostics
+    # ------------------------------------------------------------------
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return a snapshot for a bug report: identity, capabilities, state.
+
+        Everything here has had to be extracted by hand from debug logs while
+        diagnosing earlier issues. Identifying fields are redacted by the
+        diagnostics platform before download.
+        """
+        return {
+            "model": self._model,
+            "firmware": self._firmversion,
+            "mac": self._mac,
+            "controller_type": self._controllerType,
+            "rssi": self._rssi,
+            "connection": self._connectionStatus,
+            "limits": {
+                "setpoint": [self._setpoint_minimum, self._setpoint_maximum],
+                "fan_speeds": list(self._fan_speed_list),
+                "modes": list(self._operation_list),
+                "vane_vertical": list(self._vertical_vane_list),
+                "vane_horizontal": list(self._horizontal_vane_list),
+            },
+            "state": dict(self._device),
+        }
 
     def _send_update_callback(self):
         """Notify all listeners that state of the thermostat has changed."""
