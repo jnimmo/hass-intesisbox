@@ -1,28 +1,34 @@
 """IntesisBox Climate Platform."""
 
+from __future__ import annotations
+
 import asyncio
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 
+from .intesisbox import IntesisBox
+
 DOMAIN = "intesisbox"
 PLATFORMS = ["climate"]
 
+# The controller lives on the entry for the entry's lifetime. Every platform
+# reads it from here, so there is no hand-maintained dict in hass.data to keep
+# in step with setup and unload.
+type IntesisBoxConfigEntry = ConfigEntry[IntesisBox]
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Load the saved entities."""
+
+async def async_setup_entry(hass: HomeAssistant, entry: IntesisBoxConfigEntry) -> bool:
+    """Connect to the device and load its platforms."""
     host = entry.data[CONF_HOST]
 
-    from . import intesisbox
-
-    controller = intesisbox.IntesisBox(host, loop=hass.loop)
+    controller = IntesisBox(host, loop=hass.loop)
     controller.connect()
     while not controller.is_connected:
         await asyncio.sleep(0.1)
 
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = controller
+    entry.runtime_data = controller
 
     if entry.unique_id is None:
         hass.config_entries.async_update_entry(
@@ -34,8 +40,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-async def async_unload_entry(hass, entry):
-    """Unload a config entry."""
-    controller = hass.data[DOMAIN][entry.entry_id]
-    controller.stop()
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+async def async_unload_entry(hass: HomeAssistant, entry: IntesisBoxConfigEntry) -> bool:
+    """Unload a config entry and close its connection."""
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        entry.runtime_data.stop()
+    return unload_ok

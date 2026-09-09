@@ -30,7 +30,7 @@ from homeassistant.const import (
 from homeassistant.exceptions import PlatformNotReady
 import homeassistant.helpers.config_validation as cv
 
-from . import DOMAIN
+from . import DOMAIN, IntesisBoxConfigEntry
 from .intesisbox import IntesisBox
 
 _LOGGER = logging.getLogger(__name__)
@@ -99,10 +99,11 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     async_add_entities([IntesisBoxAC(controller, name, unique_id)], True)
 
 
-async def async_setup_entry(hass, entry, async_add_entities):
+async def async_setup_entry(
+    hass, entry: IntesisBoxConfigEntry, async_add_entities
+) -> None:
     """Add entries from config."""
-    controller = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([IntesisBoxAC(controller)], True)
+    async_add_entities([IntesisBoxAC(entry.runtime_data)], True)
 
 
 class IntesisBoxAC(ClimateEntity):
@@ -121,6 +122,12 @@ class IntesisBoxAC(ClimateEntity):
         self._deviceid = controller.device_mac_address
         self._devicename = name or controller.device_mac_address
         self._unique_id = unique_id or controller.device_mac_address
+        # From a config entry the device carries the name: the single climate
+        # entity has none of its own, so its friendly name is the device's, as
+        # it was, and renaming the device renames the entity with it. The
+        # YAML platform registers no device, so there the entity keeps its
+        # configured name as before.
+        self._attr_has_entity_name = name is None
         self._connected = controller.is_connected
         # Disable compatibility mode until 2025.1 as per https://developers.home-assistant.io/blog/2024/01/24/climate-climateentityfeatures-expanded/
         self._enable_turn_on_off_backwards_compatibility = False
@@ -175,8 +182,10 @@ class IntesisBoxAC(ClimateEntity):
         self._controller.add_update_callback(self.update_callback)
 
     @property
-    def name(self):
-        """Return the name of the AC device."""
+    def name(self) -> str | None:
+        """The configured name for a YAML entity; none from a config entry."""
+        if self._attr_has_entity_name:
+            return None
         return self._devicename
 
     @property
@@ -194,7 +203,7 @@ class IntesisBoxAC(ClimateEntity):
         """Info about the IntesisBox itself."""
         return {
             "identifiers": {(DOMAIN, self.unique_id)},
-            "name": self.name,
+            "name": self._devicename,
             "manufacturer": "Intesis",
             "model": self._controller.device_model,
             "sw_version": self._controller.firmware_version,
