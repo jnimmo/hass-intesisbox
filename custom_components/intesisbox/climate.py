@@ -288,15 +288,17 @@ class IntesisBoxAC(ClimateEntity):
 
         self._power = self._controller.is_on
         self._current_temp = self._controller.ambient_temperature
-        self._min_temp = self._controller.min_setpoint
-        self._max_temp = self._controller.max_setpoint
+        # Read one published snapshot so polling cannot expose a new mode
+        # with the previous mode's limits while a limits reply is pending.
+        ib_mode, self._min_temp, self._max_temp = (
+            self._controller.mode_and_setpoint_limits
+        )
         self._target_temperature = self._controller.setpoint
 
         if self._controller.fan_speed:
             self._fan_speed = self._controller.fan_speed.title()
 
         # Operation mode
-        ib_mode = self._controller.mode
         self._current_operation = MAP_OPERATION_MODE_TO_HA.get(ib_mode, STATE_UNKNOWN)
 
         # Swing mode

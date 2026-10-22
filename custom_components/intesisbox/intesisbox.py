@@ -39,6 +39,10 @@ NULL_VALUES = ["-32768", "32768"]
 # the device sends is a LIMITS list, well under a hundred bytes.
 MAX_LINE_LENGTH = 1024
 
+# The query is sent immediately. Bound the reply wait so a silent device
+# cannot hold back Home Assistant updates indefinitely.
+LIMITS_RESPONSE_TIMEOUT = 0.5
+
 background_tasks = set()
 
 
@@ -87,9 +91,17 @@ class IntesisBox(asyncio.Protocol):
         self._horizontal_vane_list: list[str] = []
         self._setpoint_minimum: float | None = None
         self._setpoint_maximum: float | None = None
+        # HA can poll between a mode report and its limits reply. Keep the
+        # last published values together until the new limits are available.
+        self._mode_and_setpoint_limits: tuple[
+            str | None, float | None, float | None
+        ] = (None, None, None)
+        self._limits_requested_mode: str | None = None
+        self._limits_response_timer: asyncio.TimerHandle | None = None
 
     def connection_made(self, transport: asyncio.BaseTransport):
         """Asyncio callback for a successful connection."""
+        self._cancel_limits_refresh()
         _LOGGER.debug("Connected to IntesisBox")
         self._transport = transport
         ensure_background_task(self.query_initial_state(), self._eventLoop)
@@ -233,10 +245,54 @@ class IntesisBox(asyncio.Protocol):
         function, value = parts[0].strip(), parts[1].strip()
         if value in NULL_VALUES:
             value = None
+        previous_value = self._device.get(function)
         self._device[function] = value
 
         _LOGGER.debug(f"Updated state: {self._device!r}")
+
+        # Limits can depend on the mode, and devices do not always push them.
+        # The first mode report is covered by query_initial_state().
+        if (
+            function == FUNCTION_MODE
+            and previous_value is not None
+            and value in MODES
+            and value != previous_value
+            and self.is_connected
+        ):
+            _LOGGER.debug(
+                "Mode changed from %s to %s, refreshing setpoint limits",
+                previous_value,
+                value,
+            )
+            # Serialize requests so a reply to an earlier mode cannot publish
+            # a newer mode with that earlier mode's limits.
+            if self._limits_response_timer is None:
+                self._request_setpoint_limits()
         return True
+
+    def _request_setpoint_limits(self):
+        """Request limits now and hold publication until the reply or timeout."""
+        self._limits_requested_mode = self.mode
+        self._limits_response_timer = asyncio.get_running_loop().call_later(
+            LIMITS_RESPONSE_TIMEOUT, self._limits_response_timed_out
+        )
+        self._write(f"LIMITS:{FUNCTION_SETPOINT}")
+
+    def _cancel_limits_refresh(self):
+        """Cancel a pending reply timeout, including on disconnect or shutdown."""
+        if self._limits_response_timer is not None:
+            self._limits_response_timer.cancel()
+            self._limits_response_timer = None
+        self._limits_requested_mode = None
+
+    def _limits_response_timed_out(self):
+        """Publish the mode with cached limits if the device fails to reply."""
+        self._cancel_limits_refresh()
+        _LOGGER.warning(
+            "No setpoint limits reply; publishing mode %s with cached limits",
+            self.mode,
+        )
+        self._send_update_callback()
 
     def _parse_limits_received(self, args) -> bool:
         """Parse a LIMITS reply. Returns True if a known limit was updated."""
@@ -250,11 +306,23 @@ class IntesisBox(asyncio.Protocol):
 
         if function == FUNCTION_SETPOINT and len(values) == 2:
             try:
-                self._setpoint_minimum = int(values[0]) / 10
-                self._setpoint_maximum = int(values[1]) / 10
+                minimum, maximum = (int(value) / 10 for value in values)
             except ValueError:
                 _LOGGER.warning("Non-numeric setpoint limits: %r", values)
                 return False
+            if minimum > maximum:
+                _LOGGER.warning("Reversed setpoint limits: %r", values)
+                return False
+            if self._limits_response_timer is not None:
+                requested_mode = self._limits_requested_mode
+                self._cancel_limits_refresh()
+                if requested_mode != self.mode and self.mode in MODES:
+                    # The mode changed again while this query was in flight.
+                    # Discard its reply and fetch limits for the current mode.
+                    self._request_setpoint_limits()
+                    return False
+            self._setpoint_minimum = minimum
+            self._setpoint_maximum = maximum
         elif function == FUNCTION_FANSP:
             self._fan_speed_list = values
         elif function == FUNCTION_MODE:
@@ -279,6 +347,7 @@ class IntesisBox(asyncio.Protocol):
 
     def connection_lost(self, exc):
         """Asyncio callback for a lost TCP connection."""
+        self._cancel_limits_refresh()
         self._connectionStatus = API_DISCONNECTED
         _LOGGER.info("The server closed the connection")
         self._send_update_callback()
@@ -317,6 +386,7 @@ class IntesisBox(asyncio.Protocol):
 
     def stop(self):
         """Public method for shutting down connectivity with the envisalink."""
+        self._cancel_limits_refresh()
         self._connectionStatus = API_DISCONNECTED
         self._transport.close()
 
@@ -463,6 +533,13 @@ class IntesisBox(asyncio.Protocol):
         return self._setpoint_maximum
 
     @property
+    def mode_and_setpoint_limits(
+        self,
+    ) -> tuple[str | None, float | None, float | None]:
+        """Published mode and limits, held together while a refresh is pending."""
+        return self._mode_and_setpoint_limits
+
+    @property
     def min_setpoint(self) -> float | None:
         """Minimum allowed target temperature."""
         return self._setpoint_minimum
@@ -484,6 +561,14 @@ class IntesisBox(asyncio.Protocol):
 
     def _send_update_callback(self):
         """Notify all listeners that state of the thermostat has changed."""
+        if self._limits_response_timer is not None:
+            # Coalesce interleaved status reports with the limits reply.
+            return
+        self._mode_and_setpoint_limits = (
+            self.mode,
+            self._setpoint_minimum,
+            self._setpoint_maximum,
+        )
         if not self._updateCallbacks:
             _LOGGER.debug("Update callback has not been set by client.")
 

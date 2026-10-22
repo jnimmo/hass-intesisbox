@@ -120,6 +120,116 @@ async def test_handshake_reads_identity_limits_and_state(port):
         await _shutdown(box)
 
 
+@pytest.fixture
+async def mode_limits_box():
+    """Connect to a device whose limits replies can be held for each test."""
+    devices = []
+
+    class ModeLimitsEmulator(Emulator):
+        def __init__(self):
+            super().__init__()
+            self.state["MODE"] = "HEAT"
+            self.commands = []
+            self.hold_limits = False
+            devices.append(self)
+
+        def handle(self, line):
+            self.commands.append(line)
+            if line == "LIMITS:SETPTEMP":
+                if not self.hold_limits:
+                    self.send("LIMITS:SETPTEMP,[100,300]\r\n")
+            else:
+                super().handle(line)
+
+    Emulator.reset()
+    server = await asyncio.get_running_loop().create_server(
+        ModeLimitsEmulator, "127.0.0.1", 0
+    )
+    box = None
+    try:
+        box = await _connect_and_handshake(server.sockets[0].getsockname()[1])
+        device = devices[0]
+        assert device.commands.count("LIMITS:SETPTEMP") == 1
+        device.commands.clear()
+        device.hold_limits = True
+        updates = []
+        box.add_update_callback(lambda: updates.append(box.mode_and_setpoint_limits))
+        yield box, device, updates
+    finally:
+        if box is not None:
+            await _shutdown(box)
+        server.close()
+        await server.wait_closed()
+
+
+async def test_mode_changes_publish_new_limits_together(mode_limits_box):
+    """Request limits once per change and publish mode and limits together."""
+    box, device, updates = mode_limits_box
+    previous = ("HEAT", 10.0, 30.0)
+    for count, (mode, minimum) in enumerate(
+        [("COOL", 18.0), ("HEAT", 10.0), ("DRY", 18.0), ("HEAT", 10.0)],
+        start=1,
+    ):
+        updates.clear()
+        device.state["MODE"] = mode
+        device.send(f"CHN,1:MODE,{mode}\r\nCHN,1:MODE,{mode}\r\n")
+        await _wait_until(
+            lambda: device.commands.count("LIMITS:SETPTEMP") == count, timeout=1
+        )
+        assert box.mode == mode  # Internal command confirmation is immediate.
+        assert box.mode_and_setpoint_limits == previous  # HA polling stays consistent.
+        assert updates == []
+        # Interleaved status and an incomplete reply must not release the update.
+        device.send(f"CHN,1:AMBTEMP,220\r\nLIMITS:SETPTEMP,[{int(minimum * 10)},")
+        await _wait_until(lambda: bool(box._buffer))
+        assert updates == []
+        assert box.mode_and_setpoint_limits == previous
+        device.send("300]\r\n")
+        await _wait_until(lambda: bool(updates))
+        previous = (mode, minimum, 30.0)
+        assert updates == [previous]
+        assert device.commands.count("LIMITS:SETPTEMP") == count
+
+
+async def test_rapid_mode_changes_discard_previous_limits(mode_limits_box):
+    """An earlier mode's reply must not be published with a newer mode."""
+    box, device, updates = mode_limits_box
+    device.send("CHN,1:MODE,COOL\r\nCHN,1:MODE,DRY\r\n")
+    await _wait_until(lambda: device.commands.count("LIMITS:SETPTEMP") == 1)
+    device.send("LIMITS:SETPTEMP,[180,300]\r\n")
+    await _wait_until(lambda: device.commands.count("LIMITS:SETPTEMP") == 2)
+    assert updates == []
+    assert box.mode_and_setpoint_limits == ("HEAT", 10.0, 30.0)
+    device.send("LIMITS:SETPTEMP,[200,280]\r\n")
+    await _wait_until(lambda: bool(updates))
+    assert updates == [("DRY", 20.0, 28.0)]
+
+
+@pytest.mark.parametrize("partial_reply", [False, True])
+async def test_limits_timeout_and_late_reply(mode_limits_box, caplog, partial_reply):
+    """A missing or incomplete reply must time out and recover when it arrives."""
+    box, device, updates = mode_limits_box
+    device.send("CHN,1:MODE,COOL\r\n")
+    if partial_reply:
+        device.send("LIMITS:SETPTEMP,[180,")
+    await _wait_until(lambda: bool(updates), timeout=1)
+    assert updates == [("COOL", 10.0, 30.0)]
+    assert "No setpoint limits reply" in caplog.text
+    device.send("280]\r\n" if partial_reply else "LIMITS:SETPTEMP,[180,280]\r\n")
+    await _wait_until(lambda: len(updates) == 2)
+    assert updates[-1] == ("COOL", 18.0, 28.0)
+
+
+async def test_disconnect_cancels_limits_wait(mode_limits_box, caplog):
+    """A pending reply timer must not publish an update after shutdown."""
+    box, device, _ = mode_limits_box
+    device.send("CHN,1:MODE,COOL\r\n")
+    await _wait_until(lambda: "LIMITS:SETPTEMP" in device.commands)
+    box.stop()
+    await asyncio.sleep(intesisbox.LIMITS_RESPONSE_TIMEOUT + 0.05)
+    assert "No setpoint limits reply" not in caplog.text
+
+
 def test_status_lines_update_state():
     """Several complete CHN lines in one chunk must all be applied."""
     box = intesisbox.IntesisBox("127.0.0.1", 1, loop=None)
