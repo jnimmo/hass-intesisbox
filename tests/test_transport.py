@@ -244,3 +244,33 @@ def test_short_id_reply_does_not_count_as_connected(caplog):
     assert box.device_mac_address is None
     assert not box.is_connected
     assert not intesisbox.background_tasks
+
+
+def test_stop_before_any_connection_is_safe():
+    """stop() must not assume a socket was ever opened."""
+    box = intesisbox.IntesisBox("127.0.0.1", 1, loop=None)
+    box.stop()
+    assert box.is_disconnected
+
+
+async def test_stop_abandons_a_pending_connection_attempt(monkeypatch):
+    """A caller that gives up must not get a connection opened behind its back."""
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+
+    async def never_connects(*args: Any, **kwargs: Any) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(loop, "create_connection", never_connects)
+    box = intesisbox.IntesisBox("127.0.0.1", 1, loop=loop)
+    box.connect()
+    await started.wait()
+    attempt = box._connect_task
+
+    box.stop()
+    await asyncio.gather(attempt, return_exceptions=True)
+
+    assert attempt.cancelled()
+    assert box.is_disconnected
+    assert attempt not in intesisbox.background_tasks
