@@ -45,6 +45,8 @@ background_tasks = set()
 def clean_background_task(task):
     """Handle background task completion."""
     background_tasks.discard(task)
+    if task.cancelled():
+        return
     _ = task.result()  # to propagate exceptions
 
 
@@ -75,6 +77,7 @@ class IntesisBox(asyncio.Protocol):
         self._firmversion: str | None = None
         self._rssi: str | None = None
         self._eventLoop = loop
+        self._connect_task: asyncio.Future | None = None
 
         # Receive buffer. TCP is a byte stream, so a single data_received() may
         # carry a partial line, several lines, or both.
@@ -297,7 +300,7 @@ class IntesisBox(asyncio.Protocol):
                     _LOGGER.debug(
                         "Opening connection to IntesisBox %s:%s", self._ip, self._port
                     )
-                    ensure_background_task(coro, self._eventLoop)
+                    self._connect_task = ensure_background_task(coro, self._eventLoop)
                 else:
                     _LOGGER.debug("Missing IP address or port.")
                     self._connectionStatus = API_DISCONNECTED
@@ -316,9 +319,16 @@ class IntesisBox(asyncio.Protocol):
                 self._send_update_callback()
 
     def stop(self):
-        """Public method for shutting down connectivity with the envisalink."""
+        """Close the connection, or abandon an attempt still in flight.
+
+        Safe before a socket has ever opened. Cancelling a pending attempt
+        keeps it from connecting after the caller has given up on it.
+        """
         self._connectionStatus = API_DISCONNECTED
-        self._transport.close()
+        if self._connect_task is not None and not self._connect_task.done():
+            self._connect_task.cancel()
+        if self._transport is not None:
+            self._transport.close()
 
     async def poll_status(self, sendcallback=False):
         """Periodically poll for updates since the controllers don't always update reliably."""
